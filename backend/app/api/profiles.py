@@ -1,0 +1,113 @@
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import Optional
+from app.api.auth import get_current_user
+import os
+from supabase import create_client
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+
+supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+
+router = APIRouter(prefix="/profiles", tags=["profiles"])
+
+class CreateProfileRequest(BaseModel):
+    child_name: str
+    age: Optional[int] = None
+    grade: Optional[str] = None
+
+class UpdateProfileRequest(BaseModel):
+    child_name: Optional[str] = None
+    age: Optional[int] = None
+    grade: Optional[str] = None
+
+# ─── Create child profile ─────────────────────────────────────────
+@router.post("/")
+async def create_profile(
+    req: CreateProfileRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    # Teachers max 30 profiles, parents max 3 (Individual) or unlimited (Premium)
+    existing = supabase.table("child_profiles").select("id").eq(
+        "user_id", current_user["user_id"]
+    ).execute()
+
+    if current_user["role"] == "teacher" and len(existing.data) >= 30:
+        raise HTTPException(status_code=400, detail="Teacher accounts support up to 30 student profiles")
+
+    # Get client_id from user
+    user = supabase.table("users").select("client_id").eq(
+        "id", current_user["user_id"]
+    ).execute()
+    client_id = user.data[0]["client_id"] if user.data else None
+
+    result = supabase.table("child_profiles").insert({
+        "user_id": current_user["user_id"],
+        "child_name": req.child_name,
+        "age": req.age,
+        "grade": req.grade,
+        "client_id": client_id
+    }).execute()
+
+    return {"profile": result.data[0], "message": f"Profile created for {req.child_name} 🐦"}
+
+# ─── Get all profiles for current user ───────────────────────────
+@router.get("/")
+async def get_profiles(current_user: dict = Depends(get_current_user)):
+    result = supabase.table("child_profiles").select("*").eq(
+        "user_id", current_user["user_id"]
+    ).execute()
+    return {"profiles": result.data, "count": len(result.data)}
+
+# ─── Get single profile ───────────────────────────────────────────
+@router.get("/{profile_id}")
+async def get_profile(
+    profile_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    result = supabase.table("child_profiles").select("*").eq(
+        "id", profile_id
+    ).eq("user_id", current_user["user_id"]).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return {"profile": result.data[0]}
+
+# ─── Update profile ───────────────────────────────────────────────
+@router.put("/{profile_id}")
+async def update_profile(
+    profile_id: str,
+    req: UpdateProfileRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    # Verify ownership
+    existing = supabase.table("child_profiles").select("id").eq(
+        "id", profile_id
+    ).eq("user_id", current_user["user_id"]).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    updates = {k: v for k, v in req.dict().items() if v is not None}
+    result = supabase.table("child_profiles").update(updates).eq(
+        "id", profile_id
+    ).execute()
+
+    return {"profile": result.data[0], "message": "Profile updated ✅"}
+
+# ─── Delete profile ───────────────────────────────────────────────
+@router.delete("/{profile_id}")
+async def delete_profile(
+    profile_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    existing = supabase.table("child_profiles").select("id").eq(
+        "id", profile_id
+    ).eq("user_id", current_user["user_id"]).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    supabase.table("child_profiles").delete().eq("id", profile_id).execute()
+    return {"message": "Profile deleted ✅"}
