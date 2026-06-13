@@ -2,9 +2,11 @@ import { useState, useRef, useEffect } from 'react'
 import CharacterSelector from './CharacterSelector'
 import SubjectSelector from './SubjectSelector'
 import ChatBubble from './ChatBubble'
+import PaywallScreen from './PaywallScreen'
+import ParentDashboard from './ParentDashboard'
 import axios from 'axios'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export default function ChatWidget() {
   const [character, setCharacter] = useState('character_1')
@@ -16,9 +18,13 @@ export default function ChatWidget() {
   const [showLogin, setShowLogin] = useState(true)
   const [loginData, setLoginData] = useState({ email: '', password: '' })
   const [loginError, setLoginError] = useState('')
+  const [profiles, setProfiles] = useState([])
+  const [selectedProfileId, setSelectedProfileId] = useState(null)
+  const [showProfilePicker, setShowProfilePicker] = useState(false)
+  const [view, setView] = useState('chat') // 'chat' | 'dashboard' | 'paywall'
+  const [paywallErrorCode, setPaywallErrorCode] = useState(null)
   const messagesEndRef = useRef(null)
 
-  // Auto scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isThinking])
@@ -28,78 +34,120 @@ export default function ChatWidget() {
     setLoginError('')
     try {
       const res = await axios.post(`${API_URL}/auth/login`, loginData)
-      setToken(res.data.token)
-      setShowLogin(false)
-      // Add welcome message
-      setMessages([{
-        role: 'assistant',
-        character: character,
-        content: character === 'character_1'
-          ? "Tweet tweet! 🐦 Hi there! I'm Chirpy! I'm so excited to learn with you today! What shall we practice? Pick a subject above and let's go! ⭐"
-          : "Welcome! 🪺 I'm Mama Bird. I'm here to help with lesson plans, learning tips, and supporting your little one's education. How can I help you today? 💛"
-      }])
+      const tok = res.data.token
+      setToken(tok)
+
+      // Fetch child profiles
+      const profileRes = await axios.get(`${API_URL}/profiles/`, {
+        headers: { Authorization: `Bearer ${tok}` }
+      })
+      const loadedProfiles = profileRes.data.profiles || []
+      setProfiles(loadedProfiles)
+
+      if (loadedProfiles.length === 1) {
+        setSelectedProfileId(loadedProfiles[0].id)
+        setShowLogin(false)
+        setWelcomeMessage(character, loadedProfiles[0].child_name)
+      } else if (loadedProfiles.length > 1) {
+        setShowLogin(false)
+        setShowProfilePicker(true)
+      } else {
+        setShowLogin(false)
+        setMessages([{
+          role: 'assistant',
+          character: character,
+          content: "Welcome! 🐦 It looks like you don't have any child profiles yet. Please create one to get started!"
+        }])
+      }
     } catch (err) {
-      setLoginError('Invalid email or password. Try: test@parent.com / Test1234!')
+      setLoginError(err.response?.data?.detail || 'Invalid email or password. Try: test@parent.com / Test1234!')
     }
+  }
+
+  const setWelcomeMessage = (char, childName) => {
+    setMessages([{
+      role: 'assistant',
+      character: char,
+      content: char === 'character_1'
+        ? `Tweet tweet! 🐦 Hi ${childName || 'there'}! I'm so excited to learn with you today! Pick a subject above and let's go! ⭐`
+        : `Welcome! 🪺 I'm here to help with lesson plans and learning tips. How can I help today? 💛`
+    }])
+  }
+
+  const handleProfileSelect = (profileId) => {
+    const profile = profiles.find(p => p.id === profileId)
+    setSelectedProfileId(profileId)
+    setShowProfilePicker(false)
+    setWelcomeMessage(character, profile?.child_name)
   }
 
   const handleCharacterChange = (newCharacter) => {
     setCharacter(newCharacter)
     if (token) {
+      const profile = profiles.find(p => p.id === selectedProfileId)
       setMessages([{
         role: 'assistant',
         character: newCharacter,
         content: newCharacter === 'character_1'
-          ? "Tweet tweet! 🐦 Hi! I'm Chirpy! Ready to learn something amazing today? Pick a subject and let's fly! ⭐"
-          : "Hello! 🪺 I'm Mama Bird. How can I support your child's learning journey today? 💛"
+          ? `Tweet tweet! 🐦 Hi! Ready to learn something amazing today? Pick a subject and let's fly! ⭐`
+          : `Hello! 🪺 How can I support your child's learning journey today? 💛`
       }])
     }
   }
 
   const sendMessage = async () => {
     if (!input.trim() || isThinking) return
-
-    const userMessage = {
-      role: 'user',
-      content: input.trim()
+    if (!selectedProfileId) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        character: character,
+        content: "Please select a child profile first! 🐦"
+      }])
+      return
     }
 
+    const userMessage = { role: 'user', content: input.trim() }
     setMessages(prev => [...prev, userMessage])
     setInput('')
     setIsThinking(true)
 
     try {
-      // For now (no API key yet) — use mock response
-      // Replace this with real API call when Anthropic key arrives
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      const res = await axios.post(
+        `${API_URL}/chat`,
+        {
+          child_profile_id: selectedProfileId,
+          character: character,
+          subject: subject,
+          message: userMessage.content
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      )
 
-      const mockResponses = {
-        character_1: [
-          `Tweet tweet! 🐦 Great question about ${subject}! Let me help you with that! Can you try spelling the word CAT? C-A-T! ⭐`,
-          `Wow, you're doing amazing! 🌟 Let's try another one! What rhymes with BAT? Think think think... 🎉`,
-          `Tweet tweet! 🐦 You're so smart! 5 eggs + 3 eggs = 8 eggs! Chirpy is SO proud of you! 🎊`,
-        ],
-        character_2: [
-          `Hello! 🪺 For ${subject} at this level, I recommend starting with foundational concepts. Would you like me to generate a structured lesson plan? 💛`,
-          `Wonderful question! 🌿 Here's what research tells us about teaching ${subject} effectively to young learners...`,
-          `I can create a week-long lesson plan for ${subject}. Just let me know the grade level and I'll structure it day by day! 🪺`,
-        ]
-      }
-
-      const responses = mockResponses[character]
-      const randomResponse = responses[Math.floor(Math.random() * responses.length)]
-
+      const newBadges = res.data.new_badges || []
       setMessages(prev => [...prev, {
         role: 'assistant',
         character: character,
-        content: randomResponse
+        content: res.data.response,
+        progress: res.data.progress,
+        illustration: res.data.illustration_key,
+        newBadges,
       }])
-
     } catch (err) {
+      const status = err.response?.status
+      const detail = err.response?.data?.detail
+      if (status === 402) {
+        const code = typeof detail === 'object' ? detail.code : 'SUBSCRIPTION_REQUIRED'
+        setPaywallErrorCode(code)
+        setView('paywall')
+        return
+      }
+      const errorMsg = typeof detail === 'object' ? detail.message : (detail || "Tweet tweet! 🐦 Something went wrong. Please try again!")
       setMessages(prev => [...prev, {
         role: 'assistant',
         character: character,
-        content: "Oops! 🐦 Something went wrong. Please try again!"
+        content: typeof errorMsg === 'string' ? errorMsg : "Something went wrong. Please try again!"
       }])
     } finally {
       setIsThinking(false)
@@ -113,29 +161,44 @@ export default function ChatWidget() {
     }
   }
 
-  // ─── Login Screen ───────────────────────────────────────
+  // ─── Paywall Screen ──────────────────────────────────────────────
+  if (view === 'paywall') {
+    return (
+      <PaywallScreen
+        token={token}
+        errorCode={paywallErrorCode}
+        onBack={() => setView('chat')}
+      />
+    )
+  }
+
+  // ─── Dashboard Screen ─────────────────────────────────────────────
+  if (view === 'dashboard') {
+    return (
+      <ParentDashboard
+        token={token}
+        selectedProfileId={selectedProfileId}
+        onBack={() => setView('chat')}
+      />
+    )
+  }
+
+  // ─── Login Screen ────────────────────────────────────────────────
   if (showLogin) {
     return (
       <div className="chat-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
         <div style={{
-          background: 'white',
-          borderRadius: '20px',
-          padding: '40px',
-          width: '100%',
-          maxWidth: '400px',
-          boxShadow: '0 10px 30px rgba(0,0,0,0.1)',
-          textAlign: 'center'
+          background: 'white', borderRadius: '20px', padding: '40px',
+          width: '100%', maxWidth: '400px',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.1)', textAlign: 'center'
         }}>
           <div style={{ fontSize: '60px', marginBottom: '10px' }}>🐦</div>
           <h1 style={{ color: '#CC2929', marginBottom: '5px' }}>MamaBird & Chirpy</h1>
-          <p style={{ color: '#888', marginBottom: '30px', fontSize: '14px' }}>
-            AI Educational Chatbot
-          </p>
+          <p style={{ color: '#888', marginBottom: '30px', fontSize: '14px' }}>AI Educational Chatbot</p>
 
           <form onSubmit={handleLogin}>
             <input
-              type="email"
-              placeholder="Email address"
+              type="email" placeholder="Email address"
               value={loginData.email}
               onChange={e => setLoginData(prev => ({ ...prev, email: e.target.value }))}
               className="chat-input"
@@ -143,8 +206,7 @@ export default function ChatWidget() {
               required
             />
             <input
-              type="password"
-              placeholder="Password"
+              type="password" placeholder="Password"
               value={loginData.password}
               onChange={e => setLoginData(prev => ({ ...prev, password: e.target.value }))}
               className="chat-input"
@@ -169,29 +231,76 @@ export default function ChatWidget() {
     )
   }
 
-  // ─── Chat Screen ────────────────────────────────────────
+  // ─── Profile Picker ──────────────────────────────────────────────
+  if (showProfilePicker) {
+    return (
+      <div className="chat-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
+        <div style={{
+          background: 'white', borderRadius: '20px', padding: '40px',
+          width: '100%', maxWidth: '400px',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.1)', textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '50px', marginBottom: '10px' }}>🐣</div>
+          <h2 style={{ color: '#CC2929', marginBottom: '20px' }}>Who is learning today?</h2>
+          {profiles.map(profile => (
+            <button
+              key={profile.id}
+              onClick={() => handleProfileSelect(profile.id)}
+              className="send-btn"
+              style={{ width: '100%', marginBottom: '10px', borderRadius: '10px', fontSize: '16px' }}
+            >
+              {profile.child_name} {profile.age ? `(age ${profile.age})` : ''}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // ─── Chat Screen ─────────────────────────────────────────────────
+  const activeProfile = profiles.find(p => p.id === selectedProfileId)
+
   return (
     <div className="chat-container">
-
-      {/* Header */}
       <div className="chat-header">
         <div className="logo">🐦</div>
         <div>
           <h1>MamaBird & Chirpy</h1>
           <p>AI Educational Chatbot • Learning is as easy as pie! 🥧</p>
         </div>
-        <div style={{ marginLeft: 'auto', fontSize: '12px', color: '#4A8B3F', fontWeight: 600 }}>
-          ✅ Trial Active
+        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+          {activeProfile && (
+            <div style={{ fontSize: '13px', color: '#4A8B3F', fontWeight: 600 }}>
+              👤 {activeProfile.child_name}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '6px', marginTop: '4px', justifyContent: 'flex-end' }}>
+            {profiles.length > 1 && (
+              <button
+                onClick={() => setShowProfilePicker(true)}
+                style={{ fontSize: '11px', color: '#888', background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Switch child
+              </button>
+            )}
+            {token && (
+              <button
+                onClick={() => setView('dashboard')}
+                style={{
+                  fontSize: '11px', color: 'white', background: '#4A8B3F',
+                  border: 'none', borderRadius: '6px', padding: '3px 8px', cursor: 'pointer',
+                }}
+              >
+                📊 Dashboard
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Character Selector */}
       <CharacterSelector selected={character} onSelect={handleCharacterChange} />
-
-      {/* Subject Selector */}
       <SubjectSelector selected={subject} onSelect={setSubject} />
 
-      {/* Messages */}
       <div className="messages-area">
         {messages.length === 0 && (
           <div className="welcome">
@@ -231,7 +340,6 @@ export default function ChatWidget() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
       <div className="input-area">
         <input
           className="chat-input"
@@ -253,7 +361,6 @@ export default function ChatWidget() {
           Send 🚀
         </button>
       </div>
-
     </div>
   )
 }

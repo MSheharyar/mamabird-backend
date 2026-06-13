@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from app.api.auth import get_current_user
+from app.services.sanitizer import sanitize_name, sanitize_grade
 import os
 from supabase import create_client
 from dotenv import load_dotenv
@@ -12,23 +13,30 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
+
 class CreateProfileRequest(BaseModel):
     child_name: str
     age: Optional[int] = None
     grade: Optional[str] = None
+
 
 class UpdateProfileRequest(BaseModel):
     child_name: Optional[str] = None
     age: Optional[int] = None
     grade: Optional[str] = None
 
-# ─── Create child profile ─────────────────────────────────────────
+
 @router.post("/")
 async def create_profile(
     req: CreateProfileRequest,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
 ):
-    # Teachers max 30 profiles, parents max 3 (Individual) or unlimited (Premium)
+    clean_name = sanitize_name(req.child_name)
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Invalid child name")
+
+    clean_grade = sanitize_grade(req.grade) if req.grade else None
+
     existing = supabase.table("child_profiles").select("id").eq(
         "user_id", current_user["user_id"]
     ).execute()
@@ -36,7 +44,6 @@ async def create_profile(
     if current_user["role"] == "teacher" and len(existing.data) >= 30:
         raise HTTPException(status_code=400, detail="Teacher accounts support up to 30 student profiles")
 
-    # Get client_id from user
     user = supabase.table("users").select("client_id").eq(
         "id", current_user["user_id"]
     ).execute()
@@ -44,15 +51,15 @@ async def create_profile(
 
     result = supabase.table("child_profiles").insert({
         "user_id": current_user["user_id"],
-        "child_name": req.child_name,
+        "child_name": clean_name,
         "age": req.age,
-        "grade": req.grade,
-        "client_id": client_id
+        "grade": clean_grade,
+        "client_id": client_id,
     }).execute()
 
-    return {"profile": result.data[0], "message": f"Profile created for {req.child_name} 🐦"}
+    return {"profile": result.data[0], "message": f"Profile created for {clean_name} 🐦"}
 
-# ─── Get all profiles for current user ───────────────────────────
+
 @router.get("/")
 async def get_profiles(current_user: dict = Depends(get_current_user)):
     result = supabase.table("child_profiles").select("*").eq(
@@ -60,11 +67,11 @@ async def get_profiles(current_user: dict = Depends(get_current_user)):
     ).execute()
     return {"profiles": result.data, "count": len(result.data)}
 
-# ─── Get single profile ───────────────────────────────────────────
+
 @router.get("/{profile_id}")
 async def get_profile(
     profile_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
 ):
     result = supabase.table("child_profiles").select("*").eq(
         "id", profile_id
@@ -74,14 +81,13 @@ async def get_profile(
         raise HTTPException(status_code=404, detail="Profile not found")
     return {"profile": result.data[0]}
 
-# ─── Update profile ───────────────────────────────────────────────
+
 @router.put("/{profile_id}")
 async def update_profile(
     profile_id: str,
     req: UpdateProfileRequest,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
 ):
-    # Verify ownership
     existing = supabase.table("child_profiles").select("id").eq(
         "id", profile_id
     ).eq("user_id", current_user["user_id"]).execute()
@@ -89,18 +95,28 @@ async def update_profile(
     if not existing.data:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    updates = {k: v for k, v in req.dict().items() if v is not None}
+    updates = {}
+    if req.child_name is not None:
+        clean_name = sanitize_name(req.child_name)
+        if not clean_name:
+            raise HTTPException(status_code=400, detail="Invalid child name")
+        updates["child_name"] = clean_name
+    if req.age is not None:
+        updates["age"] = req.age
+    if req.grade is not None:
+        updates["grade"] = sanitize_grade(req.grade)
+
     result = supabase.table("child_profiles").update(updates).eq(
         "id", profile_id
     ).execute()
 
     return {"profile": result.data[0], "message": "Profile updated ✅"}
 
-# ─── Delete profile ───────────────────────────────────────────────
+
 @router.delete("/{profile_id}")
 async def delete_profile(
     profile_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
 ):
     existing = supabase.table("child_profiles").select("id").eq(
         "id", profile_id
