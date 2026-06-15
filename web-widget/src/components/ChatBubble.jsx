@@ -6,62 +6,39 @@ export default function ChatBubble({ message }) {
   const name = isUser ? 'You' : isCharacter1 ? 'Chirpy' : 'Mama Bird'
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: isUser ? 'row-reverse' : 'row',
-      alignItems: 'flex-end',
-      gap: '10px',
-      marginBottom: '5px'
-    }}>
-      {/* Avatar */}
-      <div style={{
-        width: '40px',
-        height: '40px',
-        borderRadius: '50%',
-        background: '#FFF0F0',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '22px',
-        flexShrink: 0,
-        border: '2px solid #F5C200'
-      }}>
-        {avatar}
-      </div>
+    <div className={`message-row ${isUser ? 'user-row' : ''}`}>
+      <div className="bubble-avatar">{avatar}</div>
 
-      {/* Bubble + name */}
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: isUser ? 'flex-end' : 'flex-start',
-        maxWidth: '70%'
-      }}>
-        <div style={{
-          fontSize: '11px',
-          color: '#888',
-          marginBottom: '4px',
-          fontWeight: 600
-        }}>
-          {name}
-        </div>
+      <div className="bubble-content">
+        <div className="bubble-name">{name}</div>
 
-        <div style={{
-          padding: '12px 16px',
-          borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-          fontSize: '15px',
-          lineHeight: '1.5',
-          minWidth: '60px',
-          background: isUser ? '#CC2929' : '#E0F4FF',
-          color: isUser ? 'white' : '#1a1a1a',
-          border: isUser ? 'none' : '1px solid #6EB4D4',
-          textAlign: isUser ? 'center' : 'left'
-        }}>
+        <div className={`bubble ${isUser ? 'user-bubble' : 'character-bubble'}`}>
           {message.content}
         </div>
 
-        {message.progress && message.progress.was_correct && (
+        {message.progress?.was_correct && (
           <div className="score-badge">
             ✅ Correct! +{message.progress.score} point
+          </div>
+        )}
+
+        {message.newBadges?.length > 0 && (
+          <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {message.newBadges.map((badge, i) => (
+              <div key={i} style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '5px 12px',
+                background: 'linear-gradient(135deg, #FFFBEA, #FFF3C0)',
+                border: '1.5px solid #F5C200',
+                borderRadius: '20px', fontSize: '12px', fontWeight: 800,
+                color: '#7A5C00',
+                boxShadow: '0 2px 8px rgba(245,194,0,0.3)',
+                animation: 'pulse 1.5s ease 3',
+              }}>
+                <span style={{ fontSize: '16px' }}>{badge.badge_emoji || '🏅'}</span>
+                <span>New badge: {badge.badge_name}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>

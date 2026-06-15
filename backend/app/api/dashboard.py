@@ -3,12 +3,14 @@ import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from supabase import create_client
 from dotenv import load_dotenv
 
 from app.api.auth import get_current_user
 from app.api.dependencies import require_subscription, require_role, verify_child_ownership
 from app.services.message_limit import get_message_limit
+from app.services.pdf_service import generate_progress_pdf
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 
@@ -224,3 +226,62 @@ async def usage_report(current_user: dict = Depends(require_role("parent", "teac
         "daily": daily_list,
         "totals": {"messages": len(logs.data or []), "cost_usd": round(total_cost, 4)},
     }
+
+
+@router.get("/child/{child_profile_id}/export-pdf")
+async def export_child_pdf(
+    child_profile_id: str,
+    current_user: dict = Depends(require_subscription()),
+):
+    profile = await verify_child_ownership(child_profile_id, current_user)
+
+    progress = supabase.table("progress").select(
+        "score, total_questions, subject"
+    ).eq("child_profile_id", child_profile_id).execute()
+    progress_rows = progress.data or []
+
+    by_subject = defaultdict(lambda: {"correct": 0, "total": 0})
+    for r in progress_rows:
+        subj = r.get("subject", "unknown")
+        by_subject[subj]["correct"] += r.get("score", 0)
+        by_subject[subj]["total"] += r.get("total_questions", 1)
+
+    progress_by_subject = {}
+    for subj, vals in by_subject.items():
+        acc = round(vals["correct"] / vals["total"] * 100, 1) if vals["total"] else 0.0
+        progress_by_subject[subj] = {
+            "correct": vals["correct"],
+            "total": vals["total"],
+            "accuracy_pct": acc,
+        }
+
+    sessions = supabase.table("chat_sessions").select("id").eq(
+        "child_profile_id", child_profile_id
+    ).execute()
+    total_sessions = len(sessions.data or [])
+
+    badges = supabase.table("badges").select(
+        "badge_type, badge_name, badge_emoji, subject, earned_at"
+    ).eq("child_profile_id", child_profile_id).order("earned_at", desc=True).execute()
+
+    child_data = {
+        "child_name": profile.get("child_name"),
+        "age": profile.get("age"),
+        "grade": profile.get("grade"),
+        "total_sessions": total_sessions,
+        "streak_days": 0,
+    }
+
+    try:
+        pdf_bytes = generate_progress_pdf(child_data, progress_by_subject, badges.data or [])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    safe_name = (profile.get("child_name") or "child").replace(" ", "_")
+    filename = f"progress_report_{safe_name}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
