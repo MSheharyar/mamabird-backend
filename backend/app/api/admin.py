@@ -244,6 +244,160 @@ async def admin_usage(current_user: dict = Depends(require_role("admin"))):
     }
 
 
+# ─── GET /admin/parents-detailed ─────────────────────────────────────────────
+
+@router.get("/parents-detailed")
+async def parents_detailed(current_user: dict = Depends(require_role("admin"))):
+    """Full parent + children breakdown for the Iris admin dashboard."""
+    client_id = _get_admin_client_id(current_user["user_id"])
+
+    # All non-admin users for this client
+    users = supabase.table("users").select(
+        "id, email, role, subscription_status, subscription_plan, "
+        "trial_ends_at, subscription_ends_at, created_at"
+    ).eq("client_id", client_id).neq("role", "admin").order(
+        "created_at", desc=True
+    ).execute()
+    user_rows = users.data or []
+    user_ids = [u["id"] for u in user_rows]
+
+    if not user_ids:
+        return {"parents": [], "total": 0}
+
+    # All child profiles
+    profiles = supabase.table("child_profiles").select(
+        "id, user_id, child_name, age, grade"
+    ).in_("user_id", user_ids).execute()
+    profile_rows = profiles.data or []
+    profile_ids = [p["id"] for p in profile_rows]
+
+    # Message counts per child
+    msg_count_map: dict = {}
+    if profile_ids:
+        mc = supabase.table("message_counts").select(
+            "child_profile_id, total_messages"
+        ).in_("child_profile_id", profile_ids).execute()
+        msg_count_map = {r["child_profile_id"]: r["total_messages"] for r in (mc.data or [])}
+
+    # Session counts per child
+    session_count_map: dict = defaultdict(int)
+    last_session_map: dict = {}
+    if profile_ids:
+        sess = supabase.table("chat_sessions").select(
+            "id, child_profile_id, created_at, subject"
+        ).in_("child_profile_id", profile_ids).order(
+            "created_at", desc=True
+        ).execute()
+        for s in (sess.data or []):
+            cid = s["child_profile_id"]
+            session_count_map[cid] += 1
+            if cid not in last_session_map:
+                last_session_map[cid] = s
+
+    # Progress per child
+    progress_map: dict = defaultdict(lambda: {"correct": 0, "total": 0})
+    if profile_ids:
+        prog = supabase.table("progress").select(
+            "child_profile_id, score, total_questions"
+        ).in_("child_profile_id", profile_ids).execute()
+        for r in (prog.data or []):
+            cid = r["child_profile_id"]
+            progress_map[cid]["correct"] += r.get("score", 0)
+            progress_map[cid]["total"] += r.get("total_questions", 1)
+
+    # Badge counts per child
+    badge_map: dict = defaultdict(int)
+    if profile_ids:
+        bdg = supabase.table("badges").select(
+            "child_profile_id"
+        ).in_("child_profile_id", profile_ids).execute()
+        for b in (bdg.data or []):
+            badge_map[b["child_profile_id"]] += 1
+
+    # Usage per user (last 30 days)
+    since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    usage_all = supabase.table("usage_logs").select(
+        "user_id, cost_usd"
+    ).in_("user_id", user_ids).gte("created_at", since).execute()
+    usage_map: dict = defaultdict(lambda: {"messages": 0, "cost_usd": 0.0})
+    for r in (usage_all.data or []):
+        uid = r["user_id"]
+        usage_map[uid]["messages"] += 1
+        usage_map[uid]["cost_usd"] = round(
+            usage_map[uid]["cost_usd"] + float(r.get("cost_usd", 0)), 4
+        )
+
+    # Group children by user
+    children_by_user: dict = defaultdict(list)
+    for p in profile_rows:
+        cid = p["id"]
+        uid = p["user_id"]
+        correct = progress_map[cid]["correct"]
+        total = progress_map[cid]["total"]
+        acc = round(correct / total * 100, 1) if total else 0.0
+        last = last_session_map.get(cid)
+        children_by_user[uid].append({
+            "id": cid,
+            "child_name": p.get("child_name"),
+            "age": p.get("age"),
+            "grade": p.get("grade"),
+            "messages_used": msg_count_map.get(cid, 0),
+            "total_sessions": session_count_map.get(cid, 0),
+            "total_correct": correct,
+            "total_questions": total,
+            "accuracy_pct": acc,
+            "badges_earned": badge_map.get(cid, 0),
+            "last_active": last["created_at"] if last else None,
+            "last_subject": last["subject"] if last else None,
+        })
+
+    # Aggregate client-wide stats
+    all_children = [c for cc in children_by_user.values() for c in cc]
+    total_sessions_all = sum(c["total_sessions"] for c in all_children)
+    total_correct_all = sum(c["total_correct"] for c in all_children)
+    total_questions_all = sum(c["total_questions"] for c in all_children)
+    overall_accuracy = round(
+        total_correct_all / total_questions_all * 100, 1
+    ) if total_questions_all else 0.0
+    total_api_cost = round(
+        sum(v["cost_usd"] for v in usage_map.values()), 4
+    )
+
+    result = []
+    for u in user_rows:
+        uid = u["id"]
+        result.append({
+            "id": uid,
+            "email": u["email"],
+            "role": u.get("role"),
+            "subscription_status": u.get("subscription_status"),
+            "subscription_plan": u.get("subscription_plan"),
+            "trial_ends_at": u.get("trial_ends_at"),
+            "subscription_ends_at": u.get("subscription_ends_at"),
+            "created_at": u.get("created_at"),
+            "children": children_by_user.get(uid, []),
+            "usage_30d": usage_map[uid],
+        })
+
+    return {
+        "parents": result,
+        "total": len(result),
+        "summary": {
+            "total_parents": len(result),
+            "total_children": len(profile_rows),
+            "active_subscribers": sum(
+                1 for u in user_rows if u.get("subscription_status") == "active"
+            ),
+            "trial_users": sum(
+                1 for u in user_rows if u.get("subscription_status") == "trial"
+            ),
+            "total_sessions": total_sessions_all,
+            "overall_accuracy": overall_accuracy,
+            "api_cost_30d": total_api_cost,
+        },
+    }
+
+
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
 def _get_admin_client_id(admin_user_id: str) -> str:

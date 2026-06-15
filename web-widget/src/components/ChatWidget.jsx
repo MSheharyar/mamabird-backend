@@ -5,6 +5,7 @@ import ChatBubble from './ChatBubble'
 import PaywallScreen from './PaywallScreen'
 import ParentDashboard from './ParentDashboard'
 import AdminPanel from './AdminPanel'
+import IrisDashboard from './IrisDashboard'
 import Icon from './Icon'
 import axios from 'axios'
 
@@ -127,7 +128,7 @@ export default function ChatWidget() {
   const [profiles, setProfiles] = useState([])
   const [selectedProfileId, setSelectedProfileId] = useState(null)
   const [showProfilePicker, setShowProfilePicker] = useState(false)
-  const [view, setView] = useState('chat') // 'chat' | 'dashboard' | 'paywall' | 'admin'
+  const [view, setView] = useState('chat') // 'chat' | 'dashboard' | 'paywall' | 'admin' | 'iris'
   const [currentUserRole, setCurrentUserRole] = useState(null)
   const [paywallErrorCode, setPaywallErrorCode] = useState(null)
   const messagesEndRef = useRef(null)
@@ -142,8 +143,16 @@ export default function ChatWidget() {
     try {
       const res = await axios.post(`${API_URL}/auth/login`, loginData)
       const tok = res.data.token
+      const role = res.data.user?.role || null
       setToken(tok)
-      setCurrentUserRole(res.data.user?.role || null)
+      setCurrentUserRole(role)
+
+      // Admin users go straight to the Iris dashboard — skip chatbot entirely
+      if (role === 'admin') {
+        setShowLogin(false)
+        setView('iris')
+        return
+      }
 
       const profileRes = await axios.get(`${API_URL}/profiles/`, {
         headers: { Authorization: `Bearer ${tok}` }
@@ -264,6 +273,9 @@ export default function ChatWidget() {
     setLoginData({ email: '', password: '' })
     setLoginError('')
   }
+
+  // ─── Iris Admin Dashboard ─────────────────────────────────────────
+  if (view === 'iris') return <IrisDashboard token={token} onLogout={handleLogout} />
 
   const cardWrap = (children) => (
     <div style={{
