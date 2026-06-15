@@ -31,6 +31,7 @@ export default function ParentDashboard({ token, selectedProfileId, onBack }) {
   const [savedPlans, setSavedPlans] = useState([])
   const [viewingPlan, setViewingPlan] = useState(null)
   const [downloadingPdf, setDownloadingPdf] = useState(false)
+  const [pdfError, setPdfError] = useState('')
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -72,6 +73,7 @@ export default function ParentDashboard({ token, selectedProfileId, onBack }) {
   const downloadPdf = async () => {
     if (!selectedProfileId) return
     setDownloadingPdf(true)
+    setPdfError('')
     try {
       const res = await axios.get(
         `${API_URL}/dashboard/child/${selectedProfileId}/export-pdf`,
@@ -81,9 +83,14 @@ export default function ParentDashboard({ token, selectedProfileId, onBack }) {
       const link = document.createElement('a')
       link.href = url
       link.download = `progress_report_${childData?.child_name || 'child'}.pdf`
+      document.body.appendChild(link)
       link.click()
+      document.body.removeChild(link)
       URL.revokeObjectURL(url)
-    } catch (e) { console.error('PDF download failed', e) }
+    } catch (e) {
+      console.error('PDF download failed', e)
+      setPdfError('Could not download PDF. Please try again.')
+    }
     finally { setDownloadingPdf(false) }
   }
 
@@ -129,21 +136,26 @@ export default function ParentDashboard({ token, selectedProfileId, onBack }) {
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {selectedProfileId && (
-            <button
-              onClick={downloadPdf}
-              disabled={downloadingPdf}
-              style={{
-                padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '6px',
-                background: downloadingPdf ? '#ccc' : 'linear-gradient(135deg, #4A8B3F, #3A7030)',
-                color: 'white', border: 'none', borderRadius: '10px',
-                cursor: downloadingPdf ? 'not-allowed' : 'pointer',
-                fontFamily: 'inherit', fontWeight: 800, fontSize: '13px',
-                boxShadow: '0 3px 10px rgba(74,139,63,0.3)', transition: 'all 0.18s',
-              }}
-            >
-              <Icon name="download" size={14} color="white" />
-              {downloadingPdf ? 'Generating...' : 'Download PDF'}
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+              <button
+                onClick={downloadPdf}
+                disabled={downloadingPdf}
+                style={{
+                  padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '6px',
+                  background: downloadingPdf ? '#ccc' : 'linear-gradient(135deg, #4A8B3F, #3A7030)',
+                  color: 'white', border: 'none', borderRadius: '10px',
+                  cursor: downloadingPdf ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit', fontWeight: 800, fontSize: '13px',
+                  boxShadow: '0 3px 10px rgba(74,139,63,0.3)', transition: 'all 0.18s',
+                }}
+              >
+                <Icon name="download" size={14} color="white" />
+                {downloadingPdf ? 'Generating...' : 'Download PDF'}
+              </button>
+              {pdfError && (
+                <span style={{ fontSize: '11px', color: '#CC2929', fontWeight: 700 }}>{pdfError}</span>
+              )}
+            </div>
           )}
           <button onClick={onBack} style={{
             background: 'none', border: '2px solid #E8E8E8', color: '#6EB4D4',

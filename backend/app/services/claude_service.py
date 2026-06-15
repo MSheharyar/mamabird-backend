@@ -193,7 +193,7 @@ async def _call_lesson_plan(prompt: str) -> anthropic.types.Message:
     client = _get_client()
     return client.messages.create(
         model=MODEL,
-        max_tokens=2000,
+        max_tokens=6000,
         messages=[{"role": "user", "content": prompt}],
     )
 
