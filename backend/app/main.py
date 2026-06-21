@@ -1,18 +1,21 @@
 import logging
 import time
 import uuid
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from dotenv import load_dotenv
-import os
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from app.limiter import limiter
-from app.api import auth, profiles, config_test, chat, lesson_plans, badges, sessions, dashboard, admin
+from app.api import auth, profiles, config_test, chat, lesson_plans, badges, sessions, dashboard, admin, payments
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +24,24 @@ REQUIRED_ENV = [
     "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "JWT_SECRET", "ANTHROPIC_API_KEY",
 ]
 
-app = FastAPI(title="MamaBird Chatbot API")
+# Sentry — only initialises when SENTRY_DSN is set (safe to omit in dev)
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        traces_sample_rate=0.2,
+        send_default_pii=False,
+    )
+
+_docs_url = "/docs" if os.getenv("ENABLE_DOCS", "false").lower() == "true" else None
+_redoc_url = "/redoc" if os.getenv("ENABLE_DOCS", "false").lower() == "true" else None
+
+app = FastAPI(
+    title="MamaBird Chatbot API",
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -59,14 +79,9 @@ async def gateway_middleware(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
-    logger.info(
-        "RES %s %s %s %dms",
-        request_id,
-        request.method,
-        request.url.path,
-        duration_ms,
-    )
+    logger.info("RES %s %s %s %dms", request_id, request.method, request.url.path, duration_ms)
     return response
 
 
@@ -89,8 +104,9 @@ app.include_router(badges.router)
 app.include_router(sessions.router)
 app.include_router(dashboard.router)
 app.include_router(admin.router)
+app.include_router(payments.router)
 
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "MamaBird API is running 🐦"}
+    return {"status": "ok", "message": "MamaBird API is running"}

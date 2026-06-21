@@ -9,14 +9,16 @@ from dotenv import load_dotenv
 
 from app.api.auth import get_current_user
 from app.api.dependencies import require_subscription, require_role, verify_child_ownership
+from app.db.client import get_supabase
 from app.services.message_limit import get_message_limit
 from app.services.pdf_service import generate_progress_pdf
+from app.config.client_config import get_client_config_by_id
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 
 logger = logging.getLogger(__name__)
 
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+supabase = get_supabase()
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -272,8 +274,22 @@ async def export_child_pdf(
         "streak_days": 0,
     }
 
+    user_row = supabase.table("users").select("client_id").eq(
+        "id", current_user["user_id"]
+    ).execute()
+    client_id = user_row.data[0]["client_id"] if user_row.data else None
+    config = get_client_config_by_id(client_id) if client_id else {}
+    app_name = config.get("character_1_name", "MamaBird & Chirpy")
+    app_domain = config.get("domain", "threebabybirdies.com")
+
     try:
-        pdf_bytes = generate_progress_pdf(child_data, progress_by_subject, badges.data or [])
+        pdf_bytes = generate_progress_pdf(
+            child_data,
+            progress_by_subject,
+            badges.data or [],
+            app_name=app_name,
+            app_domain=app_domain,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

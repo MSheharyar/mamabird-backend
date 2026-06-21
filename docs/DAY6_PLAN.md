@@ -158,6 +158,195 @@ Password: `IrisAdmin@2025`
 
 ---
 
+---
+
+## Decision Logged — Prototype as Main Website
+
+**Decision:** Replace the live WordPress site (threebabybirdies.com) with the `threebabybirdies_prototype` folder as the main website. Iris approved the prototype over WordPress when shown side-by-side.
+
+**What this means:**
+- The prototype (`threebabybirdies_prototype/threebabybirdies/`) becomes the canonical frontend
+- The existing React chatbot widget's design tokens must align with `css/main.css` design system
+- Design tokens to carry across both (source of truth = `main.css :root`):
+  - `--sky: #6EB4D4` (primary / Chirpy)
+  - `--yellow: #F5C200` (highlights / CTAs)
+  - `--cream: #FDF8F0` (background)
+  - `--dark: #2C1810` (text)
+  - `--green: #4A8B3F` (Mama Bird / success)
+  - Fonts: Quicksand (headings) + Nunito (body)
+
+**Chatbot integration into prototype — steps when ready:**
+1. `chatbot.html` already has the full UI (character toggle, subject pills, chat window) — it's a frontend-only demo right now
+2. Replace the `sendMsg()` JS function in `chatbot.html` with a real `fetch()` to the FastAPI `/api/chat` endpoint
+3. Wire the login page (`login.html`) to `POST /auth/login` and `POST /auth/signup`
+4. Protect the chatbot page — redirect to login if no JWT in localStorage
+5. Sync React widget CSS tokens to match `main.css` so the embedded experience feels native
+
+---
+
+## Decision Logged — Chatbot Access / Monetization Flow
+
+**Chosen approach:** Soft gate — limited free messages, then prompt to create account, then prompt to subscribe.
+
+**Full user flow:**
+```
+Anonymous visitor
+  → 3 free messages (real AI, Chirpy responds)
+  → Prompt: "Chirpy wants to keep learning with you!"
+      → Create free account (email + password, no credit card)
+          → 10 more messages free
+          → Prompt to subscribe for unlimited access
+              → Stripe checkout → full access
+```
+
+**Why this over hard gate (login before any chat):**
+- Parents won't pay before experiencing value
+- 3 real AI messages hooks the parent (and child) emotionally first
+- Free account step builds the email list and trust before asking for money
+- This is the Duolingo / early ChatGPT model — proven for consumer edtech
+
+**Implementation notes:**
+- Track anonymous message count in `localStorage` (key: `chirpy_anon_msgs`)
+- On count reaching 3, show modal overlay on the chat window
+- After free account creation, move counter to the DB (`users.free_messages_used`)
+- After 10 free messages, show upgrade prompt (Stripe checkout link)
+- Subscription status check on every `/api/chat` call (already partially wired via `subscription_status` in users table)
+
+---
+
+## Decision Logged — Book Purchase (Stripe) in the Prototype Before Going Live
+
+**Context:** Book purchases are currently working correctly on the live WordPress site via Stripe. We need the same to work in the prototype (`book.html`) before we take the prototype live and retire WordPress.
+
+**The problem:** The prototype is static HTML — no server to create Stripe Checkout Sessions.
+
+**Solution: Stripe Payment Links (zero backend needed)**
+
+Stripe Payment Links are hosted checkout URLs that Iris generates once in the Stripe dashboard. We hardcode the link in `book.html`. No backend, no code changes on our side — Stripe handles the entire checkout, payment, receipt email, and redirect.
+
+**Steps:**
+1. Iris goes to stripe.com → Products → create a product: "Three Baby Birdies (Book)" with the correct price
+2. Stripe → Payment Links → Create Link → select that product → copy the `https://buy.stripe.com/...` URL
+3. We replace the buy button `href` in `book.html` and `index.html` (hero CTA) with that Payment Link URL
+4. Set the success redirect in Stripe dashboard to `https://threebabybirdies.com/book.html?purchased=true` (or a thank-you page)
+5. Test in Stripe test mode first with card `4242 4242 4242 4242` before flipping to live keys
+
+**Why Payment Links and not custom Stripe Checkout:**
+- No backend call needed — works while prototype is still static HTML
+- Stripe handles the entire UI, currency, tax, receipts
+- When Railway backend is live, we can optionally switch to Stripe Checkout Sessions for more control (custom metadata, webhook to record purchase in DB) — but Payment Links already send webhook events too
+- The WordPress site is likely using WooCommerce + Stripe plugin which is effectively the same thing under the hood
+
+**What to get from Iris before doing this:**
+- [ ] Stripe account login access (or she does steps 1–2 herself and shares the Payment Link URL)
+- [ ] Confirm the book price (physical / digital / both?)
+- [ ] Confirm if there's a digital download — if yes, Stripe can auto-deliver a PDF link after payment
+- [ ] Live Stripe keys (same ones needed for chatbot subscriptions — one ask, two uses)
+
+**Subscription payments (chatbot plans) are different:**
+- These need the FastAPI backend (Railway) because they're recurring billing tied to a user account
+- Stripe Payment Links can also do subscriptions, but we lose the user→subscription linkage in our DB
+- Plan: use Payment Links for the book (static, one-time), use Stripe Checkout Sessions via FastAPI for subscriptions (dynamic, tied to logged-in user)
+
+---
+
+---
+
+## Senior Engineer Audit — Gap Tracker
+
+Audited against the Senior Engineer Prompt Library (12 lenses). Use this as a running checklist before handoff to Iris / before going live.
+
+---
+
+### Prompt 9 — Security Engineer (CRITICAL — fix before Railway goes live)
+
+- [x] **Rotate all API keys** — `.env` was never committed to git (false alarm from audit). Rotated Anthropic key and JWT secret on 2026-06-17. Supabase key unchanged (not exposed). Note: all existing JWT sessions invalidated — users must log in again.
+  - Next step: when Railway is live, move all secrets to Railway env vars (never store in .env on disk long-term)
+- [x] **Fix race condition on message limits** — replaced read-check-write Python logic with a single atomic Postgres RPC (`increment_message_count`). INSERT ... ON CONFLICT DO UPDATE WHERE count < limit eliminates the race entirely. Deployed 2026-06-17.
+- [x] **Move brute-force tracking out of memory** — replaced in-memory dict with `login_attempts` Supabase table + atomic `record_login_failure` Postgres RPC. Survives restarts and works across multiple Railway instances. Deployed 2026-06-17.
+- [x] **Enforce TenantSafeQuery** — created shared singleton client (`db/client.py`), rewrote `TenantSafeQuery` to accept it, added `get_tenant_db` FastAPI dependency to `dependencies.py`. All routers (profiles, sessions, badges, chat, lesson_plans) now use `db: TenantSafeQuery = Depends(get_tenant_db)` — client_id is auto-injected on every select/insert/update/delete. Deployed 2026-06-17.
+
+---
+
+### Prompt 10 — DevOps Engineer (HIGH — entire category missing)
+
+- [ ] **CI/CD pipeline** — no GitHub Actions, no automated test run on push, no lint gate. Add `.github/workflows/ci.yml`: run `pytest` + ESLint on every PR
+- [ ] **Log aggregation** — Railway logs are ephemeral. Forward to Datadog, Logtail, or Papertrail
+- [x] **Dockerfile / railway.json** — created `backend/railway.json` with start command and restart policy. Railway dashboard must set Root Directory → `backend`. 2026-06-17.
+- [x] **Error monitoring** — Sentry added to `main.py` via `sentry-sdk[fastapi]`. Initialises only when `SENTRY_DSN` env var is set — safe to omit in dev. `/docs` and `/redoc` enabled via `ENABLE_DOCS=true` env var. 2026-06-17.
+- [x] **Remove unused Redis dependency** — removed `redis==5.0.1` from `requirements.txt`, replaced with `sentry-sdk[fastapi]==2.19.2`. 2026-06-17.
+
+---
+
+### Prompt 4 — Performance Engineer (HIGH)
+
+- [ ] **N+1 queries in `/admin/parents-detailed`** — loops through every parent then every child in Python. Will grind at 500+ users. Rewrite with SQL joins or batch queries
+- [ ] **Pagination on all admin endpoints** — currently returns every row. Add `limit`/`offset` params with a default cap of 50
+- [ ] **Stream Claude responses** — currently waits for full response before returning (2–5 second blank screen). Switch `claude_service.py` to streaming so text appears token-by-token
+- [ ] **Cache conversation history client-side** — currently reloads last 10 sessions from DB on every `/chat` call. Pass history from frontend state instead
+
+---
+
+### Prompt 11 — Testing / QA Engineer (MEDIUM)
+
+Current coverage: ~5% (3 unit test files — sanitizer, security, prompt builder)
+
+- [ ] **Integration tests** — end-to-end flow: signup → login → create child → chat → badge earned → dashboard shows data. Use FastAPI `TestClient` + a test Supabase project
+- [ ] **API endpoint tests** — at minimum: auth, chat, profiles, admin — all happy paths + error paths
+- [ ] **Concurrent request test** — validate the race condition fix on message limits actually works under simultaneous load
+- [ ] **Frontend tests** — add Vitest + React Testing Library. Test: ChatWidget renders, login flow, error states
+- [ ] **Content safety test log** — `backend/tests/content_safety_log.md` is a placeholder. Run the 10 prompts from DAY6_PLAN Priority 2 against Railway URL and fill it in
+
+---
+
+### Prompt 5 — Clean Architect (MEDIUM)
+
+- [ ] **Empty `models/` folder** — all DB rows are passed as raw dicts (typo-prone, no type safety). Add Pydantic models for `User`, `ChildProfile`, `ChatSession`, `Progress`, `Badge`
+- [ ] **`admin.py` is 408 lines** — extract analytics aggregation into `services/admin_service.py`
+- [ ] **`dashboard.py` is 288 lines** — extract PDF logic (already in `pdf_service.py`) and streak calculation into their own service functions
+- [x] **Hardcoded PDF branding** — `pdf_service.py` now accepts `app_name` and `app_domain` params (defaults kept for safety). `dashboard.py` passes values from client config. PDF export is now white-label safe. 2026-06-17.
+
+---
+
+### Prompt 7 — Frontend Engineer (MEDIUM)
+
+- [ ] **Loading skeleton UI** — blank screen during API calls. Add placeholder skeletons for chat messages, dashboard stats, session list
+- [ ] **Error boundaries** — one crashed React component currently takes down the whole widget. Wrap major sections in `<ErrorBoundary>`
+- [ ] **Empty states** — first-time user with no profiles or sessions sees nothing. Add onboarding prompt
+- [ ] **Accessibility audit** — ARIA labels on buttons/inputs, keyboard navigation through chat, colour contrast ratios (sky blue `#6EB4D4` on white may fail WCAG AA)
+- [ ] **No frontend component tests** — add Vitest + React Testing Library (see Prompt 11)
+
+---
+
+### Prompt 12 — Documentation & Handover (LOW — needed before client handoff)
+
+- [ ] **`README.md` is 1 line** — write a proper setup guide: prerequisites, env vars, how to run backend + frontend locally, how to run tests
+- [ ] **Enable FastAPI `/docs`** — Swagger UI is disabled by default config. Turn it on (dev only, gate behind env var for prod)
+- [ ] **API reference** — document all 23 endpoints: method, path, auth required, request body, response shape
+- [ ] **Architecture diagram** — add to `docs/ARCHITECTURE.md` (the Explore agent generated one — save it)
+- [ ] **Iris admin runbook** — Google Doc: "what do I do if the chatbot goes down", "how to extend a trial", "how to read the dashboard". Plain English, no tech terms (already in DAY6 Priority 4 — needs doing)
+
+---
+
+### Prompt 6 — Systems Architect (LOW)
+
+- [ ] **No CDN for static assets** — prototype HTML/CSS/JS served raw. Add Cloudflare (free) in front once domain is live
+- [ ] **No DB backup strategy documented** — verify Supabase automated backups are enabled on the project (Settings → Database → Backups)
+- [ ] **Caching gaps** — client config is cached 5 min (good). Dashboard stats and admin aggregations are rebuilt on every call (expensive). Add a short TTL cache on those endpoints
+
+---
+
+### What's Already Applied (no action needed)
+
+| Prompt | Status |
+|---|---|
+| 1 — MVP Architecture | ✅ Routes → Services → External clients, white-label config, circuit breaker |
+| 2 — Reverse-Engineer | ✅ Clean enough for this stage; address god-files post-launch |
+| 3 — Debugging Engineer | ✅ Circuit breaker, request ID logging, fallback responses |
+| 8 — Technical Lead | ✅ Good decisions throughout: prompt injection protection, multi-tenancy, rate limiting on auth |
+
+---
+
 ## Quick Reference
 
 | Item | Value |

@@ -1,17 +1,10 @@
-import os
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from supabase import create_client
-from dotenv import load_dotenv
 
-from app.api.auth import get_current_user
-from app.api.dependencies import require_subscription, verify_child_ownership
-
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+from app.api.dependencies import require_subscription, get_tenant_db, verify_child_ownership
+from app.db.tenant import TenantSafeQuery
 
 logger = logging.getLogger(__name__)
-
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -22,12 +15,13 @@ async def list_sessions(
     page: int = 1,
     limit: int = 20,
     current_user: dict = Depends(require_subscription()),
+    db: TenantSafeQuery = Depends(get_tenant_db),
 ):
     await verify_child_ownership(child_profile_id, current_user)
 
     offset = (page - 1) * limit
 
-    result = supabase.table("chat_sessions").select(
+    result = db.table("chat_sessions").select(
         "id, character, subject, created_at, messages"
     ).eq("child_profile_id", child_profile_id).order(
         "created_at", desc=True
@@ -44,8 +38,7 @@ async def list_sessions(
             "message_count": len(msgs),
         })
 
-    # Get total count
-    count_result = supabase.table("chat_sessions").select(
+    count_result = db.table("chat_sessions").select(
         "id", count="exact"
     ).eq("child_profile_id", child_profile_id).execute()
     total = count_result.count if hasattr(count_result, "count") else len(sessions)
@@ -58,10 +51,11 @@ async def get_session(
     child_profile_id: str,
     session_id: str,
     current_user: dict = Depends(require_subscription()),
+    db: TenantSafeQuery = Depends(get_tenant_db),
 ):
     await verify_child_ownership(child_profile_id, current_user)
 
-    result = supabase.table("chat_sessions").select("*").eq(
+    result = db.table("chat_sessions").select("*").eq(
         "id", session_id
     ).eq("child_profile_id", child_profile_id).execute()
 

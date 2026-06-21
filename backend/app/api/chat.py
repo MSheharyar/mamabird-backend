@@ -1,13 +1,12 @@
-import os
 import logging
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
-from supabase import create_client
-from dotenv import load_dotenv
+from pydantic import BaseModel, field_validator
 
 from app.api.auth import get_current_user
-from app.api.dependencies import require_subscription, verify_child_ownership
+from app.api.dependencies import require_subscription, verify_child_ownership, get_tenant_db
+from app.db.client import get_supabase
+from app.db.tenant import TenantSafeQuery
 from app.services.sanitizer import sanitize_message
 from app.services.claude_service import chat_with_character
 from app.services.message_limit import get_message_limit, check_and_increment_message_count
@@ -15,11 +14,7 @@ from app.services.badge_service import check_and_award_badges
 from app.config.client_config import get_client_config_by_id
 from app.limiter import limiter
 
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
-
 logger = logging.getLogger(__name__)
-
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -35,6 +30,14 @@ class ChatRequest(BaseModel):
     subject: str
     message: str
 
+    @field_validator("message")
+    @classmethod
+    def bounded(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 500:
+            raise ValueError("message must be 1–500 characters")
+        return v
+
 
 @router.post("")
 @limiter.limit("15/minute")
@@ -42,6 +45,7 @@ async def chat(
     request: Request,
     req: ChatRequest,
     current_user: dict = Depends(require_subscription()),
+    db: TenantSafeQuery = Depends(get_tenant_db),
 ):
     # 1. Sanitize incoming message
     san = sanitize_message(req.message)
@@ -66,7 +70,7 @@ async def chat(
         raise HTTPException(status_code=500, detail="Client configuration not found")
 
     # 3. Check message limit for this child's subscription tier
-    user_row = supabase.table("users").select(
+    user_row = get_supabase().table("users").select(
         "subscription_status, subscription_plan"
     ).eq("id", current_user["user_id"]).execute()
     user_data = user_row.data[0] if user_row.data else {}
@@ -95,7 +99,7 @@ async def chat(
     config = get_client_config_by_id(client_id)
 
     # 5. Load previous session messages (flatten JSONB arrays across recent sessions)
-    sessions = supabase.table("chat_sessions").select("messages").eq(
+    sessions = db.table("chat_sessions").select("messages").eq(
         "child_profile_id", req.child_profile_id
     ).eq("character", req.character).eq("subject", req.subject).order(
         "created_at", desc=False
@@ -123,13 +127,12 @@ async def chat(
         {"role": "user", "content": san["sanitized"]},
         {"role": "assistant", "content": result["response"]},
     ]
-    new_session = supabase.table("chat_sessions").insert({
+    new_session = db.table("chat_sessions").insert({
         "user_id": current_user["user_id"],
         "child_profile_id": req.child_profile_id,
         "character": req.character,
         "subject": req.subject,
         "messages": turn_messages,
-        "client_id": client_id,
     }).execute()
 
     session_id = new_session.data[0]["id"] if new_session.data else None
@@ -138,9 +141,8 @@ async def chat(
     new_badges = []
     if result.get("progress"):
         p = result["progress"]
-        supabase.table("progress").insert({
+        db.table("progress").insert({
             "child_profile_id": req.child_profile_id,
-            "client_id": client_id,
             "subject": req.subject,
             "score": p.get("score", 0),
             "total_questions": p.get("total", 1),
@@ -152,8 +154,7 @@ async def chat(
         )
 
     # 9. Log usage
-    supabase.table("usage_logs").insert({
-        "client_id": client_id,
+    db.table("usage_logs").insert({
         "user_id": current_user["user_id"],
         "child_profile_id": req.child_profile_id,
         "endpoint": "/chat",

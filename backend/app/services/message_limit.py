@@ -31,30 +31,16 @@ def check_and_increment_message_count(
     limit: int,
 ) -> dict:
     """
-    Check message count for a child and increment if under limit.
+    Atomically check and increment message count via a Postgres RPC.
+    The DB function does the check + increment in one statement, eliminating
+    the read-check-write race condition that existed in the old Python approach.
     Returns {"allowed": bool, "current": int, "limit": int}
-    Row is created automatically on first message (upsert pattern).
     """
-    result = supabase.table("message_counts").select("*").eq(
-        "child_profile_id", child_profile_id
-    ).execute()
+    result = supabase.rpc("increment_message_count", {
+        "p_child_profile_id": child_profile_id,
+        "p_user_id": user_id,
+        "p_client_id": client_id,
+        "p_limit": limit,
+    }).execute()
 
-    current = result.data[0]["total_messages"] if result.data else 0
-
-    if current >= limit:
-        return {"allowed": False, "current": current, "limit": limit}
-
-    if result.data:
-        supabase.table("message_counts").update({
-            "total_messages": current + 1,
-            "updated_at": "now()",
-        }).eq("child_profile_id", child_profile_id).execute()
-    else:
-        supabase.table("message_counts").insert({
-            "child_profile_id": child_profile_id,
-            "user_id": user_id,
-            "client_id": client_id,
-            "total_messages": 1,
-        }).execute()
-
-    return {"allowed": True, "current": current + 1, "limit": limit}
+    return result.data
