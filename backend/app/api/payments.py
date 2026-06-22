@@ -4,6 +4,7 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from typing import Optional
 
 from app.api.auth import get_current_user
 from app.db.client import get_supabase
@@ -112,6 +113,72 @@ async def stripe_webhook(request: Request):
             logger.info("Payment failed for subscription: %s", sub_id)
 
     return JSONResponse({"received": True})
+
+
+# ---- eBOOK one-time purchase ----
+
+EBOOK_PRICE_USD_CENTS = 499   # $4.99
+EBOOK_PDF_URL = os.getenv("EBOOK_PDF_URL", "")  # Set this in Railway env vars
+
+
+class EbookCheckoutRequest(BaseModel):
+    success_url: str
+    cancel_url: str
+
+
+@router.post("/ebook-checkout")
+async def ebook_checkout(body: EbookCheckoutRequest):
+    """Create a one-time Stripe Checkout session for the eBook. No auth required."""
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Payment system not configured")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": EBOOK_PRICE_USD_CENTS,
+                    "product_data": {
+                        "name": "Three Baby Birdies — Full Illustrated eBook (PDF)",
+                        "description": "Instant download. Works on any device. Keep forever.",
+                        "images": [],
+                    },
+                },
+                "quantity": 1,
+            }],
+            metadata={"product": "ebook"},
+            success_url=body.success_url + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=body.cancel_url,
+        )
+        return {"checkout_url": session.url, "session_id": session.id}
+    except stripe.StripeError as e:
+        logger.error("Stripe ebook checkout error: %s", e)
+        raise HTTPException(status_code=502, detail="Payment service error. Please try again.")
+
+
+@router.get("/ebook-verify")
+async def ebook_verify(session_id: str):
+    """Verify a completed ebook Stripe session and return download URL."""
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Payment system not configured")
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.StripeError as e:
+        logger.error("Stripe session retrieve error: %s", e)
+        raise HTTPException(status_code=502, detail="Could not verify payment")
+
+    if session.get("metadata", {}).get("product") != "ebook":
+        raise HTTPException(status_code=400, detail="Invalid session")
+
+    if session.get("payment_status") != "paid":
+        raise HTTPException(status_code=402, detail="Payment not completed")
+
+    if not EBOOK_PDF_URL:
+        logger.error("EBOOK_PDF_URL env var not set")
+        raise HTTPException(status_code=503, detail="eBook download not configured. Please contact support.")
+
+    return {"verified": True, "download_url": EBOOK_PDF_URL}
 
 
 @router.get("/plans")
