@@ -2,9 +2,7 @@
 
 > **Project:** AI-powered educational chatbot platform for children ages 3–12  
 > **Client:** Iris Scarfone — Three Baby Birdies  
-> **Developer:** Muhammad Sheharyar Ghori (TechManhattan)  
-> **SOW:** $2,000 / 90 days | Start: ~June 4, 2026  
-> **Status at Day 20:** ~50% of features complete, ahead of 90-day schedule  
+> **Developer:** Muhammad Sheharyar Ghori
 > **Live URLs:**
 > - Website: https://mamabird-chirpy.netlify.app  
 > - Backend API: https://web-production-bcff5.up.railway.app  
@@ -54,15 +52,15 @@ The platform is designed as a **white-label multi-tenant system** — the backen
 ## 2. Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────┐
 │                        CLIENT LAYER                              │
-│                                                                   │
+│                                                                  │
 │  ┌─────────────────────┐    ┌──────────────────────────────────┐ │
 │  │   Website (Netlify) │    │   Flutter App (Android / iOS)    │ │
 │  │   HTML / CSS / JS   │    │   Provider + flutter_animate     │ │
 │  │   layout.js (shared)│    │   Speech-to-text + ElevenLabs    │ │
-│  └──────────┬──────────┘    └──────────────┬───────────────────┘ │
-└─────────────┼────────────────────────────── ┼───────────────────-┘
+│  └──────────┬──────────┘    └────────────────┬─────────────────┘ │
+└─────────────┼────────────────────────────────┼───────────────────┘
               │ HTTPS REST                     │ HTTPS REST
               ▼                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -446,9 +444,11 @@ The website uses a custom CSS design system (`css/main.css`) inspired by **KidZo
 | Page | Purpose | Special features |
 |---|---|---|
 | `index.html` | Homepage | Animated blobs, stats bar, subject tiles, marquee, eBook promo |
-| `chatbot.html` | Chirpy's Classroom feature | Character selector, subject tiles, scroll-reveal |
+| `chatbot.html` | Public Chirpy's Classroom demo | Character selector, subject tiles, scroll-reveal. **Redirects logged-in users immediately** via `window.location.replace()` to their correct app page — no sign-out button exposed |
+| `app.html` | Authenticated parent/teacher app | Full-height chat with Chirpy, parent dashboard panel (progress, badges, lesson plan export). 4-digit PIN lock gates all parent controls |
+| `admin.html` | Iris admin dashboard | Stats cards, parents table with expandable child rows, extend-trial / cancel actions, daily usage breakdown, search + status filter |
 | `pricing.html` | Plan comparison | Gradient plan cards (4 tiers) |
-| `login.html` | Auth | Red gradient, warm background, tab Sign In / Register |
+| `login.html` | Auth | Red gradient, warm background, tab Sign In / Register. Routes to `admin.html` or `app.html` by role after login. Redirects already-logged-in users immediately |
 | `ebook.html` | eBook purchase | 3D book mockup, Stripe checkout |
 | `ebook-download.html` | Post-payment | Session verify, download button |
 | `privacy.html` | Privacy Policy | 10 sections, COPPA callout |
@@ -457,9 +457,19 @@ The website uses a custom CSS design system (`css/main.css`) inspired by **KidZo
 
 ### Shared Layout (`layout.js`)
 - Injects nav, mobile menu, footer into every page via `innerHTML`
-- Swaps nav CTA to "My Classroom" if `mb_token` exists in localStorage
+- When logged in: swaps nav CTA to "My Classroom →" linking to `app.html` (parents/teachers) or `admin.html` (admin). **Sign out is completely absent from the public nav** — a child cannot sign out from any public page; logout is only accessible via PIN-protected button inside `app.html`
 - Injects 4 floating birds with staggered CSS animations (position:fixed, z-index:0)
 - Active nav link detection
+
+### Web PIN Lock System (`app.html`)
+`app.html` enforces a child-safe mode by default:
+- **Child mode** (default): only the chat interface is visible. Dashboard, logout, and all parent controls are hidden behind a `🔒` button
+- **Parent mode** (unlocked): revealed by entering the 4-digit PIN in a fullscreen numpad modal
+- **First-time setup**: no stored PIN → modal walks parent through set → confirm flow
+- **Auto-relock**: parent mode automatically locks after 3 minutes of inactivity
+- **Lockout**: 5 failed attempts → 5-minute lockout with countdown
+- **Lock-on-close**: dashboard panel locks automatically when closed
+- PIN stored as plain 4-digit string in `localStorage` under `mb_pin` (server-side PIN hashing is a future enhancement)
 
 ---
 
@@ -501,6 +511,15 @@ Mic button → SpeechToText → text → API → Claude response
                            flutter_tts fallback (mobile only)
 ```
 
+### APK v1.0 (Internal Testing)
+- Built June 2026 as debug-signed release APK (50.2 MB) for TechManhattan dev team review
+- App label set to **"Chirpy's Classroom"** via `AndroidManifest.xml` (`android:label`)
+- Production API URL hardcoded in `api.dart` (`kApiBase = https://web-production-bcff5.up.railway.app`)
+
+### Login Screen Fixes (Chrome Web)
+- **Tab clipping on Chrome**: `BoxDecoration` indicator was overflowing on Chrome. Fixed by wrapping `TabBar` in `ClipRRect(borderRadius: BorderRadius.circular(14))` + `indicatorSize: TabBarIndicatorSize.tab` + `indicatorPadding: EdgeInsets.zero`
+- **Error message sanitization**: Added `_cleanError()` helper that converts raw `ClientException: Failed to fetch` and HTTP status codes into plain-English messages ("Could not reach the server", "Incorrect email or password", "Too many attempts", etc.)
+
 ### Design Language
 - **Primary color:** `kRed` (#CC2929) — pill buttons, active states
 - **Secondary:** `kPurple` (#7C3AED) — badges, settings headers
@@ -529,10 +548,16 @@ Mic button → SpeechToText → text → API → Claude response
 ### API Security
 - All endpoints require JWT except `/auth/signup`, `/auth/login`, `/health`
 - Rate limiting: 30 requests/minute on chat endpoints (SlowAPI)
-- CORS: origin whitelist from env var (not wildcard in production)
+- CORS: origin whitelist from env var (not wildcard in production) + `allow_origin_regex=r"http://localhost:\d+"` for Flutter web local development on any port
 - Input sanitization before every Claude API call
 - Stack traces never exposed in HTTP responses (global exception handler)
 - TenantSafeQuery ensures no cross-tenant data leakage
+
+### Child Protection (Web)
+Three vectors through which a child could escape the app were identified and closed:
+1. **Public nav "Sign out"** — removed entirely. Logged-in nav only shows "My Classroom →" (no sign-out option)
+2. **"My Classroom" nav destination** — previously pointed to `chatbot.html` (public demo with unprotected sign-out). Now routes to `app.html` / `admin.html` by role
+3. **`chatbot.html` auth bar** — previously rendered a "Sign out" button when logged in. Now immediately `window.location.replace()`s to the correct app page — the page never renders for logged-in users
 
 ### Content Safety
 - Pre-generation: keyword/pattern filter in `sanitizer.py`
@@ -609,10 +634,13 @@ ALLOWED_ORIGINS=https://mamabird-chirpy.netlify.app
 - [x] Startup validation
 - [x] White-label test endpoint (`GET /test/whitelabel-check`)
 
-### Website (10+ Pages)
+### Website (12+ Pages)
 - [x] Homepage (KidZo-style redesign, animations, subject tiles)
 - [x] About, Book, Blog, Contact pages
-- [x] Chirpy's Classroom feature page (character selector, subject tiles)
+- [x] Chirpy's Classroom feature page (character selector, subject tiles) — redirects logged-in users
+- [x] **Authenticated app page (`app.html`)** — full chat + parent dashboard behind 4-digit PIN lock
+- [x] **Iris admin dashboard (`admin.html`)** — stats, parent table, extend-trial/cancel, usage breakdown
+- [x] Role-based post-login routing (admin → `admin.html`, parent/teacher → `app.html`)
 - [x] Pricing page (4-tier gradient cards)
 - [x] Login/Register page (red theme, tab UI)
 - [x] eBook purchase page ($4.99 Stripe paywall)
@@ -620,11 +648,11 @@ ALLOWED_ORIGINS=https://mamabird-chirpy.netlify.app
 - [x] Privacy Policy (10 sections, COPPA-compliant)
 - [x] Terms of Service (subscription table, refund policy)
 - [x] COPPA Compliance page (parent rights grid, AI safety disclosure)
-- [x] Shared layout (nav, footer, floating birds on every page)
+- [x] Shared layout (nav, footer, floating birds on every page — sign-out removed from public nav)
 
 ### Mobile App (Flutter)
 - [x] Splash screen (animated, red gradient)
-- [x] Login/Register screen (red hero, tab UI)
+- [x] Login/Register screen (red hero, tab UI — Chrome tab clipping fixed with ClipRRect + indicatorSize)
 - [x] Home screen (KidZo subject tiles, real API stats, greeting)
 - [x] Chat screen (AI chat, voice input, TTS output, markdown rendering)
 - [x] Parental lock (Parent PIN with numpad + shake animation)
@@ -636,6 +664,8 @@ ALLOWED_ORIGINS=https://mamabird-chirpy.netlify.app
 - [x] Subject selector pills in chat
 - [x] Character switcher (Chirpy ↔ Mama Bird mid-session)
 - [x] Bottom navigation (Home / Badges / Account)
+- [x] User-friendly error messages via `_cleanError()` (no raw `ClientException` shown to users)
+- [x] **APK v1.0** built for internal testing (debug-signed, app label "Chirpy's Classroom")
 
 ---
 
@@ -655,6 +685,10 @@ These features were added beyond the original SOW scope, adding significant valu
 | **Speech-to-text input** | Flutter app | Kids who can't type can still use Chirpy |
 | **Parent PIN numpad lock** | Flutter app | COPPA-aligned parental control, keeps kids in the learning zone |
 | **Admin dashboard** | Backend + Website | Iris can monitor all parents/children/usage without DB access |
+| **Web PIN lock system** | Website (`app.html`) | Child-safe mode by default — parent controls hidden behind 4-digit PIN with auto-relock, lockout, and first-time setup flow |
+| **Role-based post-login routing** | Website | Admin routed to `admin.html`, parent/teacher to `app.html` — prevents children from using admin interface |
+| **Child escape route hardening** | Website | Sign out removed from public nav, `chatbot.html` redirects logged-in users, `app.html` requires PIN for all parent actions |
+| **CORS regex for Flutter web dev** | Backend | `allow_origin_regex` allows any `localhost:\d+` port — Flutter web picks a random port and was blocked by the origin whitelist |
 | **Circuit breaker pattern** | Backend | Production resilience — Anthropic outages don't crash the app |
 | **Marquee strip animation** | Website | "Spelling · Rhyming · Math · Grammar · Puzzles · Stories" brand loop |
 | **Multi-tenant architecture** | Backend | Platform can be licensed to other edtech clients without code changes |
@@ -703,6 +737,22 @@ These features were added beyond the original SOW scope, adding significant valu
 ### 9. Flutter withOpacity Deprecation
 **Problem:** `withOpacity()` is deprecated in Flutter 3.x, causing analysis warnings throughout.  
 **Solution:** Migrated all instances to `withValues(alpha: x)` — the new API.
+
+### 12. CORS Port Mismatch on Flutter Web
+**Problem:** Flutter web picks a random port (e.g., `localhost:52341`) but Railway's CORS only allowed `localhost:5173` and `localhost:3000`. Chrome blocked every API call with "ClientException: Failed to fetch."  
+**Solution:** Added `allow_origin_regex=r"http://localhost:\d+"` to `CORSMiddleware` in `main.py`. Allows any localhost port in dev while production remains whitelist-only.
+
+### 13. Chat Input Floating Mid-Screen
+**Problem:** `app.html` chat input box was floating in the middle of the viewport. Root cause: `chat-msgs` had a fixed `height: 380px` and `body` wasn't filling viewport height.  
+**Solution:** Full flex layout — `html,body{height:100%;overflow:hidden;}`, `flex:1` on `.app-body` and `.chat-card`, removed fixed height from `.chat-msgs`, `flex-shrink:0` on `.chat-input-row`.
+
+### 14. Flutter Tab Clipping on Chrome
+**Problem:** `TabBar` with `BoxDecoration` indicator overflowed its container on Chrome, clipping the "Sign In" tab label.  
+**Solution:** Wrapped `TabBar` in `ClipRRect(borderRadius: BorderRadius.circular(14))` and set `indicatorSize: TabBarIndicatorSize.tab` + `indicatorPadding: EdgeInsets.zero`.
+
+### 15. Nested Git Repo Warning
+**Problem:** `threebabybirdies_prototype/threebabybirdies/` is the `mamabird-website` repo (has its own `.git`), nested inside the `mamabird-chatbot` (backend) repo. Running `git add threebabybirdies_prototype/` from the backend repo triggered a git warning and excluded the website files.  
+**Solution:** Always `cd` into `threebabybirdies_prototype/threebabybirdies/` and push from there to `MSheharyar/mamabird-website`. Never commit website files from the backend repo.
 
 ### 10. Mobile Repo Initial Commit Conflict
 **Problem:** `mamabird-mobile` GitHub repo had an auto-generated "Initial commit" (README.md). Local Flutter project couldn't fast-forward merge.  
@@ -764,11 +814,23 @@ POST /payments/ebook-checkout         Start eBook Stripe checkout
 GET  /payments/ebook-verify           Verify payment + return download URL
 ```
 
+### Dashboard
+```
+GET  /dashboard/summary              Usage stats (sessions, messages, accuracy)
+GET  /dashboard/child/{id}           Detailed child progress + badge list
+GET  /dashboard/child/{id}/export-pdf  Export child progress report as PDF
+GET  /dashboard/usage-report         Full usage breakdown
+```
+
 ### Admin
 ```
-GET  /admin/parents        All parent accounts with child counts
-GET  /admin/children       All child profiles with activity
-GET  /admin/usage          System-wide usage logs
+GET  /admin/stats                    6 aggregate stats (total users, children, sessions, revenue, messages, badges)
+GET  /admin/parents-detailed         All parent accounts with nested child rows
+GET  /admin/parents                  All parent accounts with child counts
+GET  /admin/children                 All child profiles with activity
+GET  /admin/usage                    Daily usage breakdown table
+PUT  /admin/users/{id}/extend-trial  Add 7 days to trial (body: { days: 7 })
+PUT  /admin/users/{id}/cancel        Cancel a user's subscription
 ```
 
 ---
@@ -808,9 +870,13 @@ GET  /admin/usage          System-wide usage logs
 ### Pending (Developer)
 - [ ] Content safety test log (10 prompts → `backend/tests/content_safety_log.md`)
 - [ ] Iris admin runbook / Google Doc
-- [ ] Google Play submission (APK build)
+- [x] APK v1.0 built (debug-signed, "Chirpy's Classroom", 50.2 MB) — internal testing
+- [ ] Google Play submission (signed release APK + store listing)
 - [ ] Apple App Store submission ($99/yr developer account)
 - [ ] Railway upgrade to Hobby plan (trial ends ~July 23, 2026)
+- [ ] Fix `"grace_period"` vs `"grace"` discrepancy in `dependencies.py` webhook handler
+- [ ] Token refresh endpoint (`POST /auth/refresh`)
+- [ ] Password reset flow (`POST /auth/forgot-password`)
 
 ### Future Enhancements (Post-MVP)
 - Classroom teacher dashboard (student progress grid)
@@ -821,6 +887,3 @@ GET  /admin/usage          System-wide usage logs
 - Spline 3D animations on website
 
 ---
-
-*Document generated: June 24, 2026*  
-*Author: Muhammad Sheharyar Ghori — TechManhattan*
