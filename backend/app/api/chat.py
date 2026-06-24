@@ -2,6 +2,7 @@ import logging
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
+from typing import List, Optional
 
 from app.api.auth import get_current_user
 from app.api.dependencies import require_subscription, verify_child_ownership, get_tenant_db
@@ -11,7 +12,7 @@ from app.services.sanitizer import sanitize_message
 from app.services.claude_service import chat_with_character
 from app.services.message_limit import get_message_limit, check_and_increment_message_count
 from app.services.badge_service import check_and_award_badges
-from app.config.client_config import get_client_config_by_id
+from app.config.client_config import get_client_config_by_id, get_client_config_cached
 from app.limiter import limiter
 
 logger = logging.getLogger(__name__)
@@ -174,3 +175,54 @@ async def chat(
         "session_id": session_id,
         "fallback": result.get("fallback", False),
     }
+
+
+class DemoMessage(BaseModel):
+    role: str
+    content: str
+
+
+class DemoChatRequest(BaseModel):
+    message: str
+    history: Optional[List[DemoMessage]] = []
+
+    @field_validator("message")
+    @classmethod
+    def bounded(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 500:
+            raise ValueError("message must be 1–500 characters")
+        return v
+
+
+@router.post("/demo")
+@limiter.limit("10/minute")
+async def demo_chat(request: Request, req: DemoChatRequest):
+    """Public Spelling demo — no auth required. Chirpy + Spelling only, 4-message cap enforced client-side."""
+    san = sanitize_message(req.message)
+    if not san["safe"]:
+        raise HTTPException(status_code=400, detail="Message contains disallowed content.")
+
+    try:
+        config = get_client_config_cached("threebabybirdies.com")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable.")
+
+    # Keep last 6 history messages (3 turns) for context; validate shape
+    safe_history = [
+        {"role": h.role, "content": h.content}
+        for h in (req.history or [])
+        if h.role in ("user", "assistant") and h.content
+    ][-6:]
+
+    result = await chat_with_character(
+        config=config,
+        character="character_1",
+        subject="spelling",
+        child_age=7,
+        conversation_history=safe_history,
+        new_message=san["sanitized"],
+        child_name="friend",
+    )
+
+    return {"response": result["response"], "fallback": result.get("fallback", False)}
