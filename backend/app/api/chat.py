@@ -8,7 +8,8 @@ from app.api.auth import get_current_user
 from app.api.dependencies import require_subscription, verify_child_ownership, get_tenant_db
 from app.db.client import get_supabase
 from app.db.tenant import TenantSafeQuery
-from app.services.sanitizer import sanitize_message
+from app.services.sanitizer import sanitize_message, check_response_safety
+from app.services.redis_client import incr_with_ttl
 from app.services.claude_service import chat_with_character
 from app.services.message_limit import get_message_limit, check_and_increment_message_count
 from app.services.badge_service import check_and_award_badges
@@ -195,26 +196,52 @@ class DemoChatRequest(BaseModel):
         return v
 
 
+_DEMO_MSG_LIMIT = 4
+_DEMO_WINDOW_SECONDS = 3600  # 1 hour rolling window per IP
+
+_SAFE_FALLBACK = "Tweet tweet! 🐦 Let's keep our spelling adventure going — what word would you like to try next?"
+
+
 @router.post("/demo")
 @limiter.limit("10/minute")
 async def demo_chat(request: Request, req: DemoChatRequest):
-    """Public Spelling demo — no auth required. Chirpy + Spelling only, 4-message cap enforced client-side."""
+    """Public Spelling demo — no auth. Chirpy + Spelling, 4 messages/IP/hour via Redis."""
+
+    # 1. Server-side per-IP message cap (Redis / in-memory fallback)
+    client_ip = request.client.host if request.client else "unknown"
+    redis_key = f"demo:{client_ip}"
+    demo_count = incr_with_ttl(redis_key, _DEMO_WINDOW_SECONDS)
+    if demo_count > _DEMO_MSG_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "DEMO_LIMIT_REACHED",
+                "message": "Free demo limit reached. Sign up for a free 3-month trial to keep learning!",
+            },
+        )
+
+    # 2. Sanitize incoming message
     san = sanitize_message(req.message)
     if not san["safe"]:
         raise HTTPException(status_code=400, detail="Message contains disallowed content.")
 
+    # 3. Load ThreeBabyBirdies config
     try:
         config = get_client_config_cached("threebabybirdies.com")
     except Exception:
         raise HTTPException(status_code=503, detail="Service temporarily unavailable.")
 
-    # Keep last 6 history messages (3 turns) for context; validate shape
-    safe_history = [
-        {"role": h.role, "content": h.content}
-        for h in (req.history or [])
-        if h.role in ("user", "assistant") and h.content
-    ][-6:]
+    # 4. Sanitize history — run each item through injection scanner, drop failures
+    safe_history = []
+    for h in (req.history or []):
+        if h.role not in ("user", "assistant") or not h.content:
+            continue
+        h_san = sanitize_message(h.content)
+        if h_san["safe"]:
+            safe_history.append({"role": h.role, "content": h_san["sanitized"]})
+    safe_history = safe_history[-6:]  # last 3 turns
 
+    # 5. Call Claude
     result = await chat_with_character(
         config=config,
         character="character_1",
@@ -225,4 +252,16 @@ async def demo_chat(request: Request, req: DemoChatRequest):
         child_name="friend",
     )
 
-    return {"response": result["response"], "fallback": result.get("fallback", False)}
+    # 6. Post-generation safety check on Claude's response
+    response_text = result.get("response", "")
+    safety = check_response_safety(response_text)
+    if not safety["safe"]:
+        logger.warning("Demo post-gen safety triggered (%s) — returning fallback", safety["reason"])
+        response_text = _SAFE_FALLBACK
+
+    remaining = max(0, _DEMO_MSG_LIMIT - demo_count)
+    return {
+        "response": response_text,
+        "fallback": result.get("fallback", False) or not safety["safe"],
+        "remaining": remaining,
+    }

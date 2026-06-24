@@ -6,6 +6,18 @@ _MAX_MESSAGE_LEN = 500
 _MAX_NAME_LEN = 50
 _MAX_GRADE_LEN = 20
 
+# Post-generation response safety — catches obvious model misbehaviour
+_RESPONSE_BAD_PATTERNS = re.compile(
+    r"""
+    \b(fuck|shit|ass\b|bitch|cunt|dick\b|cock\b|pussy\b|bastard|damn\b|crap\b)  # profanity
+    |\b(kill\s+yourself|suicide|self.harm|blow\s+up|bomb|shoot|weapon)           # violence / self-harm
+    |\b(sex|porn|nude|naked|condom|penis|vagina|breast\b)                        # adult content
+    |\b(your\s+password|credit\s+card|social\s+security|ssn|bank\s+account)     # credential fishing
+    |<script|javascript:|on\w+\s*=|data:text/html                               # XSS attempt in response
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 _INJECTION_PATTERNS = [
     r"ignore\s+(previous|all|prior)\s+instructions?",
     r"forget\s+(you\s+are|that\s+you)",
@@ -55,6 +67,18 @@ def sanitize_message(text: str) -> dict:
     sanitized = html.escape(cleaned)
 
     return {"safe": True, "sanitized": sanitized, "reason": None}
+
+
+def check_response_safety(text: str) -> dict:
+    """
+    Post-generation safety check on Claude's response before it reaches the client.
+    Returns {"safe": bool, "reason": str | None}
+    """
+    if not isinstance(text, str) or not text.strip():
+        return {"safe": False, "reason": "empty_response"}
+    if _RESPONSE_BAD_PATTERNS.search(text):
+        return {"safe": False, "reason": "unsafe_content_in_response"}
+    return {"safe": True, "reason": None}
 
 
 def sanitize_name(name: str) -> str:
