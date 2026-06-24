@@ -553,6 +553,20 @@ Mic button → SpeechToText → text → API → Claude response
 - Stack traces never exposed in HTTP responses (global exception handler)
 - TenantSafeQuery ensures no cross-tenant data leakage
 
+### Public Demo Security (`/chat/demo`)
+The public chatbot demo on `chatbot.html` has a dedicated security stack separate from the authenticated system:
+
+| Control | Detail |
+|---|---|
+| **Server-side message cap** | 4 messages per IP per hour tracked in Redis (`demo:{ip}` key, 1-hour TTL). Falls back to per-process in-memory counter if `REDIS_URL` is not set. Enforced by returning HTTP 429. |
+| **Input sanitization** | New message runs through `sanitize_message()` — 12 prompt-injection regex patterns, control character stripping, length cap (500 chars). |
+| **History sanitization** | Each conversation history item is individually run through `sanitize_message()` — items that fail are silently dropped before being sent to Claude. |
+| **Post-generation safety** | `check_response_safety()` scans Claude's response for profanity, violence, adult content, credential-fishing phrases, and XSS patterns before the response is returned. Returns a safe fallback if triggered. |
+| **XSS prevention (frontend)** | `safeHtml()` escapes `&`, `<`, `>`, `"`, `'` in Claude's response before it's injected into `innerHTML`. User input is also escaped before display. |
+| **Rate limiting** | SlowAPI: 10 requests/minute per IP (in addition to the Redis 4/hour demo cap). |
+| **No DB writes** | Demo calls leave no trace in Supabase — no sessions, no usage logs, no profiles. |
+| **Subject lock** | Backend always uses Chirpy + Spelling regardless of what the frontend sends. |
+
 ### Child Protection (Web)
 Three vectors through which a child could escape the app were identified and closed:
 1. **Public nav "Sign out"** — removed entirely. Logged-in nav only shows "My Classroom →" (no sign-out option)
@@ -596,7 +610,10 @@ STRIPE_PRICE_ID_PREMIUM=price_...    # pending from Iris
 STRIPE_PRICE_ID_CLASSROOM=price_...  # pending from Iris
 EBOOK_PDF_URL=https://...            # pending — upload PDF to storage
 ALLOWED_ORIGINS=https://mamabird-chirpy.netlify.app
+REDIS_URL=redis://...                # add Railway Redis plugin → auto-set
 ```
+
+> **Redis setup**: In Railway dashboard → project → "+ New" → "Database" → "Add Redis". Railway injects `REDIS_URL` automatically. Without it the demo limiter falls back to an in-process memory store (resets on redeploy, not shared across instances).
 
 ### Database (Supabase)
 - Region: USA (free tier)
@@ -638,6 +655,7 @@ ALLOWED_ORIGINS=https://mamabird-chirpy.netlify.app
 - [x] Homepage (KidZo-style redesign, animations, subject tiles)
 - [x] About, Book, Blog, Contact pages
 - [x] Chirpy's Classroom feature page (character selector, subject tiles) — redirects logged-in users
+- [x] **Public demo chatbot** — real Claude AI, Spelling only, 4 msg/IP/hour via Redis, full security stack
 - [x] **Authenticated app page (`app.html`)** — full chat + parent dashboard behind 4-digit PIN lock
 - [x] **Iris admin dashboard (`admin.html`)** — stats, parent table, extend-trial/cancel, usage breakdown
 - [x] Role-based post-login routing (admin → `admin.html`, parent/teacher → `app.html`)
