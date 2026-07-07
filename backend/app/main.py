@@ -5,6 +5,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from dotenv import load_dotenv
@@ -81,9 +82,20 @@ async def gateway_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
 
     logger.info("RES %s %s %s %dms", request_id, request.method, request.url.path, duration_ms)
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Return a generic message so field names / schema are not leaked to clients.
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.warning("Validation error [%s] on %s: %s", request_id, request.url.path, exc)
+    return JSONResponse(status_code=422, content={"detail": "Invalid request data"})
 
 
 @app.exception_handler(Exception)

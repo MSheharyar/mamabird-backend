@@ -46,7 +46,7 @@ def require_subscription():
             else:
                 return current_user
 
-        if status == "grace_period":
+        if status == "grace":
             return current_user
 
         raise HTTPException(
