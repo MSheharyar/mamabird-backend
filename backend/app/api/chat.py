@@ -163,7 +163,7 @@ async def chat(
         "input_tokens": result.get("input_tokens", 0),
         "output_tokens": result.get("output_tokens", 0),
         "cost_usd": float(result.get("cost_usd", 0)),
-        "model": "claude-sonnet-4-6",
+        "model": result.get("model", "claude-haiku-4-5"),
         "duration_ms": result.get("duration_ms", 0),
         "was_fallback": result.get("fallback", False),
     }).execute()

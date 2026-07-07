@@ -11,10 +11,14 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
-# Cost per million tokens (USD)
-_COST_INPUT_PER_M = 3.00
-_COST_OUTPUT_PER_M = 15.00
+MODEL = "claude-sonnet-4-6"          # lesson plans — quality-critical, not latency-sensitive
+CHAT_MODEL = "claude-haiku-4-5"      # kid-facing chat — fast + cheap, plenty capable for spelling/phonics
+
+# Cost per million tokens (USD), per model: (input, output)
+_PRICING = {
+    "claude-haiku-4-5":  (1.00, 5.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+}
 
 _FALLBACK_RESPONSE = (
     "Tweet tweet! 🐦 I need a tiny rest! "
@@ -56,17 +60,16 @@ def _get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
-def _calculate_cost(input_tokens: int, output_tokens: int) -> float:
-    return (input_tokens / 1_000_000 * _COST_INPUT_PER_M) + (
-        output_tokens / 1_000_000 * _COST_OUTPUT_PER_M
-    )
+def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    cost_in, cost_out = _PRICING.get(model, (3.00, 15.00))
+    return (input_tokens / 1_000_000 * cost_in) + (output_tokens / 1_000_000 * cost_out)
 
 
 async def _call_claude(system_prompt: str, messages: list) -> anthropic.types.Message:
     """Raw Claude API call — wrapped in circuit breaker by callers."""
     client = _get_client()
     return client.messages.create(
-        model=MODEL,
+        model=CHAT_MODEL,
         max_tokens=1000,
         system=system_prompt,
         messages=messages,
@@ -79,7 +82,7 @@ async def _call_claude_followup(
 ) -> anthropic.types.Message:
     client = _get_client()
     return client.messages.create(
-        model=MODEL,
+        model=CHAT_MODEL,
         max_tokens=1000,
         system=system_prompt,
         messages=messages,
@@ -126,6 +129,7 @@ async def chat_with_character(
             "output_tokens": 0,
             "cost_usd": 0.0,
             "duration_ms": int(time.monotonic() * 1000) - start_ms,
+            "model": CHAT_MODEL,
         }
 
     response_text = ""
@@ -140,7 +144,11 @@ async def chat_with_character(
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
 
-    if progress_data:
+    # Only make a SECOND Claude call if progress was recorded but the first
+    # response produced no spoken reply. When Claude both speaks and records
+    # progress in one response (the common case), skip the follow-up — this
+    # halves per-message latency vs. always doing two sequential generations.
+    if progress_data and not response_text.strip():
         tool_use_id = next(
             b.id for b in response.content if b.type == "tool_use"
         )
@@ -172,7 +180,7 @@ async def chat_with_character(
             input_tokens += final_response.usage.input_tokens
             output_tokens += final_response.usage.output_tokens
 
-    cost_usd = _calculate_cost(input_tokens, output_tokens)
+    cost_usd = _calculate_cost(CHAT_MODEL, input_tokens, output_tokens)
     duration_ms = int(time.monotonic() * 1000) - start_ms
 
     return {
@@ -185,6 +193,7 @@ async def chat_with_character(
         "output_tokens": output_tokens,
         "cost_usd": cost_usd,
         "duration_ms": duration_ms,
+        "model": CHAT_MODEL,
     }
 
 
@@ -241,7 +250,7 @@ async def generate_lesson_plan(
 
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
-    cost_usd = _calculate_cost(input_tokens, output_tokens)
+    cost_usd = _calculate_cost(MODEL, input_tokens, output_tokens)
 
     try:
         plan = json.loads(raw)
