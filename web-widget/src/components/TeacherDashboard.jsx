@@ -254,9 +254,7 @@ export default function TeacherDashboard({ token, onLogout, onTeachStudent }) {
           {/* roster */}
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
             <h3 style={{ fontSize: 14, fontWeight: 800, color: C.red, margin: 0, marginRight: 'auto', textTransform: 'uppercase', letterSpacing: '.5px' }}>Roster</h3>
-            <button style={{ ...S.btn, background: `linear-gradient(135deg, ${C.green}, #3A7030)`, color: 'white' }} onClick={() => setShowAddStudent(true)}>
-              <Icon name="user" size={12} color="white" /> Add Student
-            </button>
+            <span style={{ fontSize: 12, color: C.mid }}>👨‍👩‍👧 Students join with the class code above.</span>
           </div>
           <div style={{ overflowX: 'auto', marginBottom: 26 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>

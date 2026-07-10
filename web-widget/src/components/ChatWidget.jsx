@@ -476,7 +476,7 @@ export default function ChatWidget() {
               </button>
             )}
             {token && !cameFromTeacher && currentUserRole !== 'teacher' && currentUserRole !== 'admin' && (
-              <button onClick={openJoinModal} style={S.switchBtn}>🎓 Join Class</button>
+              <button onClick={openJoinModal} style={S.switchBtn}>{activeProfile?.classroom_name ? `🎓 ${activeProfile.classroom_name}` : '🎓 Join Class'}</button>
             )}
             {token && (
               <button
