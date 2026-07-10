@@ -111,7 +111,9 @@ def check_and_award_badges(
         ).execute()
         earned_types = set()
         for b in (existing.data or []):
-            key = f"{b['badge_type']}:{b.get('subject', '')}"
+            # subject is NULL for non-subject badges; normalise None -> "" so the
+            # key matches the rule key below (otherwise badges re-award every turn).
+            key = f"{b['badge_type']}:{b.get('subject') or ''}"
             earned_types.add(key)
 
         new_badges = []
