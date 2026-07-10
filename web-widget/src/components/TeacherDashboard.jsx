@@ -114,6 +114,11 @@ export default function TeacherDashboard({ token, onLogout, onTeachStudent }) {
       setShowAssign(false); refreshDetail()
     } catch (e) { fail(e) } finally { setAssigning(false) }
   }
+  const regenCode = async () => {
+    if (!window.confirm('Generate a new code? The current one stops working immediately.')) return
+    try { const r = await axios.post(`${API_URL}/classrooms/${active.id}/regenerate-code`, {}, auth); setActive({ ...active, join_code: r.data.join_code }) }
+    catch (e) { fail(e) }
+  }
   const downloadReport = async () => {
     try {
       const r = await axios.get(`${API_URL}/classrooms/${active.id}/report-pdf`, { ...auth, responseType: 'blob' })
@@ -226,6 +231,16 @@ export default function TeacherDashboard({ token, onLogout, onTeachStudent }) {
         <button style={{ ...S.btn, background: '#FFF0F0', color: C.red, border: '1px solid #CC292933' }} onClick={() => deleteClass(active)}>Delete</button>
       </div>
 
+      {active?.join_code && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '-4px 0 18px' }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: C.mid }}>🔑 Join code:</span>
+          <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 16, letterSpacing: 3, background: '#EBF6FC', color: '#3A8BB0', padding: '4px 12px', borderRadius: 8 }}>{active.join_code}</span>
+          <button style={{ ...S.btn, background: C.cream, color: C.dark, border: `1px solid ${C.line}` }} onClick={() => { navigator.clipboard && navigator.clipboard.writeText(active.join_code) }}>Copy</button>
+          <button style={{ ...S.btn, background: C.cream, color: C.dark, border: `1px solid ${C.line}` }} onClick={regenCode}>Regenerate</button>
+          <span style={{ fontSize: 12, color: C.mid, flexBasis: '100%' }}>Share with parents so they can enroll their child in this class.</span>
+        </div>
+      )}
+
       {!analytics ? <p style={{ color: C.mid }}>Loading class data…</p> : (
         <>
           {/* totals */}
@@ -254,14 +269,16 @@ export default function TeacherDashboard({ token, onLogout, onTeachStudent }) {
                   <tr><td style={{ ...S.td, color: C.mid }} colSpan={6}>No students yet — add one to get started.</td></tr>
                 ) : students.map((s) => (
                   <tr key={s.id}>
-                    <td style={{ ...S.td, fontWeight: 700 }}>🐣 {s.child_name}</td>
+                    <td style={{ ...S.td, fontWeight: 700 }}>🐣 {s.child_name}{s.joined && <span style={{ fontSize: 10, background: '#FFFAEB', color: '#92600a', padding: '2px 7px', borderRadius: 999, fontWeight: 700, marginLeft: 6, verticalAlign: 'middle' }}>parent-joined</span>}</td>
                     <td style={S.td}>{s.grade || '—'}</td>
                     <td style={S.td}>{s.sessions}</td>
                     <td style={{ ...S.td, fontWeight: 800, color: accColor(s.avg_score) }}>{s.avg_score}%</td>
                     <td style={S.td}>{s.badges}</td>
                     <td style={{ ...S.td, whiteSpace: 'nowrap' }}>
-                      <button style={{ ...S.btn, background: `linear-gradient(135deg, ${C.blue}, #4A96BC)`, color: 'white', padding: '6px 10px', fontSize: 12 }}
-                        onClick={() => onTeachStudent && onTeachStudent({ id: s.id, child_name: s.child_name })}>▶ Teach</button>
+                      {s.joined
+                        ? <span style={{ fontSize: 12, color: C.mid }}>Parent-managed</span>
+                        : <button style={{ ...S.btn, background: `linear-gradient(135deg, ${C.blue}, #4A96BC)`, color: 'white', padding: '6px 10px', fontSize: 12 }}
+                            onClick={() => onTeachStudent && onTeachStudent({ id: s.id, child_name: s.child_name })}>▶ Teach</button>}
                       <button style={{ ...S.btn, background: 'none', color: C.mid, padding: '6px 8px', fontSize: 12 }}
                         onClick={() => removeStudent(s.id, s.child_name)}>Remove</button>
                     </td>

@@ -133,6 +133,9 @@ export default function ChatWidget() {
   const [currentUserRole, setCurrentUserRole] = useState(null)
   const [paywallErrorCode, setPaywallErrorCode] = useState(null)
   const [cameFromTeacher, setCameFromTeacher] = useState(false)
+  const [showJoinModal, setShowJoinModal] = useState(false)
+  const [joinCode, setJoinCode] = useState('')
+  const [joinChildId, setJoinChildId] = useState(null)
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
@@ -215,6 +218,39 @@ export default function ChatWidget() {
     setWelcomeMessage('character_1', student.child_name)
     setCameFromTeacher(true)
     setView('chat')
+  }
+
+  // Parent: join / leave a teacher's class by code
+  const reloadProfiles = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/profiles/`, { headers: { Authorization: `Bearer ${token}` } })
+      setProfiles(res.data.profiles || [])
+    } catch (e) { /* ignore */ }
+  }
+  const openJoinModal = () => {
+    setJoinChildId(selectedProfileId || (profiles[0] && profiles[0].id) || null)
+    setJoinCode('')
+    setShowJoinModal(true)
+  }
+  const submitJoin = async () => {
+    if (!joinCode.trim()) return
+    try {
+      await axios.post(`${API_URL}/classrooms/join`,
+        { join_code: joinCode.trim().toUpperCase(), child_profile_id: joinChildId },
+        { headers: { Authorization: `Bearer ${token}` } })
+      await reloadProfiles()
+      setShowJoinModal(false)
+    } catch (e) {
+      alert(e.response?.data?.detail?.message || e.response?.data?.detail || 'Could not join class')
+    }
+  }
+  const leaveClass = async (childId) => {
+    if (!window.confirm('Leave this class? Your child stays in your account.')) return
+    try {
+      await axios.post(`${API_URL}/classrooms/leave`, { child_profile_id: childId },
+        { headers: { Authorization: `Bearer ${token}` } })
+      await reloadProfiles()
+    } catch (e) { /* ignore */ }
   }
 
   const handleCharacterChange = (newCharacter) => {
@@ -439,6 +475,9 @@ export default function ChatWidget() {
                 Switch
               </button>
             )}
+            {token && !cameFromTeacher && currentUserRole !== 'teacher' && currentUserRole !== 'admin' && (
+              <button onClick={openJoinModal} style={S.switchBtn}>🎓 Join Class</button>
+            )}
             {token && (
               <button
                 onClick={() => setView('dashboard')}
@@ -518,6 +557,33 @@ export default function ChatWidget() {
 
         <div ref={messagesEndRef} />
       </div>
+
+      {showJoinModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: '20px' }} onClick={() => setShowJoinModal(false)}>
+          <div style={{ ...S.card, maxWidth: '400px' }} onClick={e => e.stopPropagation()}>
+            <h2 style={{ ...S.cardTitle, fontSize: '20px' }}>🎓 Join a Class</h2>
+            <p style={S.cardSubtitle}>Enter the code your child's teacher gave you.</p>
+            <div style={S.inputWrap}>
+              <label style={S.inputLabel}>Child</label>
+              <select style={S.loginInput} value={joinChildId || ''} onChange={e => setJoinChildId(e.target.value)}>
+                {profiles.map(p => <option key={p.id} value={p.id}>{p.child_name}{p.classroom_name ? ` (in ${p.classroom_name})` : ''}</option>)}
+              </select>
+            </div>
+            <div style={{ ...S.inputWrap, marginBottom: '18px' }}>
+              <label style={S.inputLabel}>Class code</label>
+              <input style={{ ...S.loginInput, textTransform: 'uppercase', letterSpacing: '2px' }} value={joinCode}
+                onChange={e => setJoinCode(e.target.value)} placeholder="e.g. SRG8T3" />
+            </div>
+            {(() => { const p = profiles.find(x => x.id === joinChildId); return p && p.classroom_name ? (
+              <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Currently in {p.classroom_name} · <span style={{ color: '#CC2929', cursor: 'pointer', fontWeight: 700 }} onClick={() => leaveClass(p.id)}>Leave class</span></p>
+            ) : null })()}
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button style={{ ...S.loginBtn, background: '#F0F0F0', color: '#555', boxShadow: 'none' }} onClick={() => setShowJoinModal(false)}>Cancel</button>
+              <button style={S.loginBtn} onClick={submitJoin}>Join</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="input-area">
         <input
