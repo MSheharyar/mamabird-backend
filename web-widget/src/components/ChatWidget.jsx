@@ -6,6 +6,7 @@ import PaywallScreen from './PaywallScreen'
 import ParentDashboard from './ParentDashboard'
 import AdminPanel from './AdminPanel'
 import IrisDashboard from './IrisDashboard'
+import TeacherDashboard from './TeacherDashboard'
 import Icon from './Icon'
 import axios from 'axios'
 
@@ -131,6 +132,7 @@ export default function ChatWidget() {
   const [view, setView] = useState('chat') // 'chat' | 'dashboard' | 'paywall' | 'admin' | 'iris'
   const [currentUserRole, setCurrentUserRole] = useState(null)
   const [paywallErrorCode, setPaywallErrorCode] = useState(null)
+  const [cameFromTeacher, setCameFromTeacher] = useState(false)
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
@@ -151,6 +153,13 @@ export default function ChatWidget() {
       if (role === 'admin') {
         setShowLogin(false)
         setView('iris')
+        return
+      }
+
+      // Teachers go to the Teacher Dashboard (classroom management)
+      if (role === 'teacher') {
+        setShowLogin(false)
+        setView('teacher')
         return
       }
 
@@ -195,6 +204,17 @@ export default function ChatWidget() {
     setSelectedProfileId(profileId)
     setShowProfilePicker(false)
     setWelcomeMessage(character, profile?.child_name)
+  }
+
+  // Teacher launches a live Chirpy session as one of their students
+  const handleTeachStudent = (student) => {
+    setProfiles([student])
+    setSelectedProfileId(student.id)
+    setCharacter('character_1')
+    setSubject('spelling')
+    setWelcomeMessage('character_1', student.child_name)
+    setCameFromTeacher(true)
+    setView('chat')
   }
 
   const handleCharacterChange = (newCharacter) => {
@@ -276,6 +296,9 @@ export default function ChatWidget() {
 
   // ─── Iris Admin Dashboard ─────────────────────────────────────────
   if (view === 'iris') return <IrisDashboard token={token} onLogout={handleLogout} />
+
+  // ─── Teacher Dashboard ────────────────────────────────────────────
+  if (view === 'teacher') return <TeacherDashboard token={token} onLogout={handleLogout} onTeachStudent={handleTeachStudent} />
 
   const cardWrap = (children) => (
     <div style={{
@@ -406,6 +429,11 @@ export default function ChatWidget() {
             </div>
           )}
           <div style={S.headerBtns}>
+            {cameFromTeacher && (
+              <button onClick={() => { setCameFromTeacher(false); setView('teacher') }} style={S.switchBtn}>
+                ← Class
+              </button>
+            )}
             {profiles.length > 1 && (
               <button onClick={() => setShowProfilePicker(true)} style={S.switchBtn}>
                 Switch

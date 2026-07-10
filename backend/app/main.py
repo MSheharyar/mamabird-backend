@@ -16,7 +16,7 @@ from sentry_sdk.integrations.starlette import StarletteIntegration
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from app.limiter import limiter
-from app.api import auth, profiles, config_test, chat, lesson_plans, badges, sessions, dashboard, admin, payments
+from app.api import auth, profiles, config_test, chat, lesson_plans, badges, sessions, dashboard, admin, payments, classrooms
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -118,6 +118,7 @@ app.include_router(sessions.router)
 app.include_router(dashboard.router)
 app.include_router(admin.router)
 app.include_router(payments.router)
+app.include_router(classrooms.router)
 
 
 @app.get("/health")
