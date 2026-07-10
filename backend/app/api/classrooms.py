@@ -1,7 +1,8 @@
 import re
+import secrets
 import logging
 from collections import defaultdict
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
@@ -10,22 +11,41 @@ from app.api.dependencies import require_role, get_tenant_db
 from app.db.tenant import TenantSafeQuery
 from app.services.sanitizer import sanitize_name, sanitize_grade, sanitize_message
 from app.services.claude_service import generate_lesson_plan
-from app.services.message_limit import get_message_limit
 from app.services.pdf_service import generate_classroom_report
 from app.config.client_config import get_client_config_by_id
-from app.db.client import get_supabase
+from app.limiter import limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/classrooms", tags=["classrooms"])
 
 _MAX_STUDENTS_PER_TEACHER = 30
+_MAX_CLASS_SIZE = 40
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no ambiguous 0/O/1/I/L
 _CLASS_NAME_RE = re.compile(r"[^a-zA-Z0-9\s\-'.]")
 
 
 def _clean_class_name(s: str) -> str:
     """Class names allow letters, digits, spaces, hyphens, apostrophes, dots."""
     return _CLASS_NAME_RE.sub("", s or "").strip()[:60]
+
+
+def _gen_join_code(db: TenantSafeQuery) -> str:
+    """Generate a unique 6-char class join code (retry on collision)."""
+    for _ in range(12):
+        code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
+        if not db.table("classrooms").select("id").eq("join_code", code).execute().data:
+            return code
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+
+
+def _ensure_code(row: dict, db: TenantSafeQuery) -> dict:
+    """Backfill a missing join_code on an existing classroom row."""
+    if not row.get("join_code"):
+        code = _gen_join_code(db)
+        db.table("classrooms").update({"join_code": code}).eq("id", row["id"]).execute()
+        row["join_code"] = code
+    return row
 
 
 # ─── Request models ─────────────────────────────────────────────────────────
@@ -53,6 +73,15 @@ class AssignLessonRequest(BaseModel):
     focus_areas: Optional[str] = ""
 
 
+class JoinClassRequest(BaseModel):
+    join_code: str
+    child_profile_id: str
+
+
+class LeaveClassRequest(BaseModel):
+    child_profile_id: str
+
+
 # ─── Ownership helper ───────────────────────────────────────────────────────
 
 def _owned_classroom(classroom_id: str, current_user: dict, db: TenantSafeQuery) -> dict:
@@ -66,7 +95,7 @@ def _owned_classroom(classroom_id: str, current_user: dict, db: TenantSafeQuery)
 
 def _class_students(classroom_id: str, db: TenantSafeQuery) -> list:
     return (db.table("child_profiles").select(
-        "id, child_name, age, grade, classroom_id, created_at"
+        "id, child_name, age, grade, classroom_id, user_id, created_at"
     ).eq("classroom_id", classroom_id).execute().data) or []
 
 
@@ -87,6 +116,7 @@ async def create_classroom(
         "teacher_id": current_user["user_id"],
         "name": name,
         "grade_level": grade,
+        "join_code": _gen_join_code(db),
     }).execute()
     return {"classroom": result.data[0]}
 
@@ -110,6 +140,7 @@ async def list_classrooms(
             counts[p["classroom_id"]] += 1
 
     for c in classes:
+        _ensure_code(c, db)
         c["student_count"] = counts.get(c["id"], 0)
     return {"classrooms": classes, "count": len(classes)}
 
@@ -121,6 +152,7 @@ async def get_classroom(
     db: TenantSafeQuery = Depends(get_tenant_db),
 ):
     classroom = _owned_classroom(classroom_id, current_user, db)
+    _ensure_code(classroom, db)
     classroom["students"] = _class_students(classroom_id, db)
     return {"classroom": classroom}
 
@@ -208,19 +240,91 @@ async def remove_student(
     db: TenantSafeQuery = Depends(get_tenant_db),
 ):
     _owned_classroom(classroom_id, current_user, db)
-    # Verify the student belongs to this teacher before touching it
-    prof = db.table("child_profiles").select("id, user_id, classroom_id").eq(
+    # Verify the student is a member of THIS class (teacher-added or parent-joined).
+    # Removal only unassigns the class — it never deletes a parent's profile.
+    prof = db.table("child_profiles").select("id, classroom_id").eq(
         "id", profile_id
     ).execute()
     row = prof.data[0] if prof.data else None
-    if not row or row.get("user_id") != current_user["user_id"] or row.get("classroom_id") != classroom_id:
+    if not row or row.get("classroom_id") != classroom_id:
         raise HTTPException(status_code=404, detail="Student not found in this class")
 
-    # Remove from class (keeps the student's history)
     db.table("child_profiles").update({"classroom_id": None}).eq(
         "id", profile_id
     ).execute()
     return {"removed": True}
+
+
+# ─── Join codes ─────────────────────────────────────────────────────────────
+
+@router.post("/{classroom_id}/regenerate-code")
+async def regenerate_code(
+    classroom_id: str,
+    current_user: dict = Depends(require_role("teacher")),
+    db: TenantSafeQuery = Depends(get_tenant_db),
+):
+    _owned_classroom(classroom_id, current_user, db)
+    code = _gen_join_code(db)
+    db.table("classrooms").update({"join_code": code}).eq("id", classroom_id).execute()
+    return {"join_code": code}
+
+
+@router.post("/join")
+@limiter.limit("10/minute")
+async def join_class(
+    request: Request,
+    req: JoinClassRequest,
+    current_user: dict = Depends(require_role("parent")),
+    db: TenantSafeQuery = Depends(get_tenant_db),
+):
+    code = (req.join_code or "").strip().upper()
+
+    # Parent must own the child being enrolled
+    prof = db.table("child_profiles").select("id, user_id").eq(
+        "id", req.child_profile_id
+    ).execute()
+    child = prof.data[0] if prof.data else None
+    if not child or child.get("user_id") != current_user["user_id"]:
+        raise HTTPException(status_code=404, detail="Child profile not found")
+
+    # Look up the class by code within this tenant — generic error on miss
+    res = db.table("classrooms").select("*").eq("join_code", code).execute()
+    classroom = res.data[0] if res.data else None
+    if not classroom:
+        raise HTTPException(status_code=404, detail="Invalid class code")
+
+    # Capacity
+    members = db.table("child_profiles").select("id").eq(
+        "classroom_id", classroom["id"]
+    ).execute()
+    if len(members.data or []) >= _MAX_CLASS_SIZE:
+        raise HTTPException(status_code=400, detail="This class is full")
+
+    # Join (moves the child if already in another class)
+    db.table("child_profiles").update({"classroom_id": classroom["id"]}).eq(
+        "id", req.child_profile_id
+    ).execute()
+    return {"joined": True, "classroom": {
+        "id": classroom["id"], "name": classroom["name"], "grade_level": classroom.get("grade_level"),
+    }}
+
+
+@router.post("/leave")
+async def leave_class(
+    req: LeaveClassRequest,
+    current_user: dict = Depends(require_role("parent")),
+    db: TenantSafeQuery = Depends(get_tenant_db),
+):
+    prof = db.table("child_profiles").select("id, user_id").eq(
+        "id", req.child_profile_id
+    ).execute()
+    child = prof.data[0] if prof.data else None
+    if not child or child.get("user_id") != current_user["user_id"]:
+        raise HTTPException(status_code=404, detail="Child profile not found")
+    db.table("child_profiles").update({"classroom_id": None}).eq(
+        "id", req.child_profile_id
+    ).execute()
+    return {"left": True}
 
 
 # ─── Class analytics ────────────────────────────────────────────────────────
@@ -289,6 +393,7 @@ def _build_analytics(classroom: dict, db: TenantSafeQuery) -> dict:
                 "badges": badge_by_child.get(cid, 0),
                 "messages_used": msg_by_child.get(cid, 0),
                 "last_active": last_active.get(cid),
+                "joined": s.get("user_id") != classroom.get("teacher_id"),
             })
 
     subject_breakdown = {}

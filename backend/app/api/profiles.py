@@ -59,7 +59,18 @@ async def get_profiles(
     result = db.table("child_profiles").select("*").eq(
         "user_id", current_user["user_id"]
     ).execute()
-    return {"profiles": result.data, "count": len(result.data)}
+    profiles = result.data or []
+
+    # Attach the class name for any child enrolled in a classroom
+    class_ids = list({p["classroom_id"] for p in profiles if p.get("classroom_id")})
+    names = {}
+    if class_ids:
+        rows = db.table("classrooms").select("id, name").in_("id", class_ids).execute()
+        names = {r["id"]: r["name"] for r in (rows.data or [])}
+    for p in profiles:
+        p["classroom_name"] = names.get(p.get("classroom_id"))
+
+    return {"profiles": profiles, "count": len(profiles)}
 
 
 @router.get("/{profile_id}")
