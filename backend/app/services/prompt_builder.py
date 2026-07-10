@@ -4,9 +4,12 @@ def build_system_prompt(
     subject: str,
     child_age: int = 7,
     child_name: str = "friend",
+    lesson_plan: dict = None,
 ) -> str:
     """
     Builds the AI system prompt entirely from config — zero hardcoded brand names.
+    When the child is enrolled in a class with an assigned lesson plan, that plan
+    is injected as gentle guidance (does not lock the subject).
     """
     response_style = config.get("response_style", {})
     language = response_style.get("language", "en")
@@ -20,6 +23,7 @@ def build_system_prompt(
     difficulty = _age_to_difficulty(child_age)
     forbidden_str = ", ".join(forbidden)
     knowledge_section = _build_knowledge_section(knowledge_base)
+    lesson_section = _build_lesson_section(lesson_plan, child_name)
 
     if character == "character_1":
         name = config.get("character_1_name", "Assistant")
@@ -55,7 +59,7 @@ CHILD'S NAME: {child_name}
 CHILD'S AGE: {child_age} years old
 
 SUBJECT-SPECIFIC INSTRUCTIONS:
-{_get_subject_instructions(subject, name, child_age)}{knowledge_section}"""
+{_get_subject_instructions(subject, name, child_age)}{knowledge_section}{lesson_section}"""
 
     else:
         name = config.get("character_2_name", "Assistant")
@@ -84,9 +88,32 @@ RULES YOU MUST ALWAYS FOLLOW:
    curriculum support, and parent/teacher guidance
 
 CURRENT SUBJECT: {subject}
-CURRENT CONTEXT: {_get_context_instructions(subject)}{knowledge_section}"""
+CURRENT CONTEXT: {_get_context_instructions(subject)}{knowledge_section}{lesson_section}"""
 
     return prompt
+
+
+def _build_lesson_section(lesson_plan: dict, child_name: str) -> str:
+    if not lesson_plan or not isinstance(lesson_plan, dict):
+        return ""
+    title = lesson_plan.get("title", "")
+    overview = lesson_plan.get("overview", "")
+    objectives = lesson_plan.get("objectives") or []
+    obj_str = "; ".join(str(o) for o in objectives[:6])
+    lines = [
+        f"\n\nYOUR TEACHER'S CURRENT LESSON PLAN (gently guide {child_name} toward these):"
+    ]
+    if title:
+        lines.append(f"- Plan: {title}")
+    if overview:
+        lines.append(f"- Overview: {overview}")
+    if obj_str:
+        lines.append(f"- Objectives: {obj_str}")
+    lines.append(
+        "- Weave these objectives into your questions and practice when it fits. "
+        "Keep it playful and short — never lecture, and still follow the child's lead."
+    )
+    return "\n".join(lines)
 
 
 def _age_to_difficulty(age: int) -> str:

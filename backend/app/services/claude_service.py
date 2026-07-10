@@ -98,6 +98,7 @@ async def chat_with_character(
     conversation_history: list,
     new_message: str,
     child_name: str = "friend",
+    lesson_plan: dict = None,
 ) -> dict:
     """
     Send a message to Claude and return {response, character, subject, progress, fallback}.
@@ -105,7 +106,7 @@ async def chat_with_character(
     """
     start_ms = int(time.monotonic() * 1000)
     system_prompt = build_system_prompt(
-        config, character, subject, child_age, child_name
+        config, character, subject, child_age, child_name, lesson_plan=lesson_plan
     )
     messages = conversation_history[-20:] + [
         {"role": "user", "content": new_message}

@@ -113,6 +113,15 @@ async def chat(
         history.extend(msgs)
     history = history[-20:]
 
+    # 5b. If the child is enrolled in a class, follow the teacher's latest lesson plan
+    lesson_plan = None
+    if profile.get("classroom_id"):
+        lp = db.table("lesson_plans").select("plan_data").eq(
+            "classroom_id", profile["classroom_id"]
+        ).order("created_at", desc=True).limit(1).execute()
+        if lp.data:
+            lesson_plan = lp.data[0].get("plan_data")
+
     # 6. Call Claude
     result = await chat_with_character(
         config=config,
@@ -122,6 +131,7 @@ async def chat(
         conversation_history=history,
         new_message=san["sanitized"],
         child_name=child_name,
+        lesson_plan=lesson_plan,
     )
 
     # 7. Save this turn to chat_sessions (one row per turn, messages = [user, assistant])
