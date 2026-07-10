@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
@@ -6,6 +7,8 @@ from app.api.auth import get_current_user
 from app.api.dependencies import get_tenant_db
 from app.db.tenant import TenantSafeQuery
 from app.services.sanitizer import sanitize_name, sanitize_grade
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
@@ -129,6 +132,13 @@ async def delete_profile(
 
     if not existing.data:
         raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Remove rows that reference this child first, or the FK blocks the delete.
+    for tbl in ("progress", "badges", "chat_sessions", "message_counts", "usage_logs", "lesson_plans"):
+        try:
+            db.table(tbl).delete().eq("child_profile_id", profile_id).execute()
+        except Exception as exc:
+            logger.warning("delete_profile: cleanup of %s failed: %s", tbl, exc)
 
     db.table("child_profiles").delete().eq("id", profile_id).execute()
     return {"message": "Profile deleted"}

@@ -100,15 +100,16 @@ async def chat(
     # 4. Load cached client config
     config = get_client_config_by_id(client_id)
 
-    # 5. Load previous session messages (flatten JSONB arrays across recent sessions)
+    # 5. Load the MOST RECENT sessions (desc), then flatten oldest->newest so the
+    #    model sees current context (not the child's very first sessions ever).
     sessions = db.table("chat_sessions").select("messages").eq(
         "child_profile_id", req.child_profile_id
     ).eq("character", req.character).eq("subject", req.subject).order(
-        "created_at", desc=False
+        "created_at", desc=True
     ).limit(10).execute()
 
     history = []
-    for session_row in (sessions.data or []):
+    for session_row in reversed(sessions.data or []):
         msgs = session_row.get("messages") or []
         history.extend(msgs)
     history = history[-20:]
