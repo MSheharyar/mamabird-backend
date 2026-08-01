@@ -16,7 +16,7 @@ from sentry_sdk.integrations.starlette import StarletteIntegration
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from app.limiter import limiter
-from app.api import auth, profiles, config_test, chat, lesson_plans, badges, sessions, dashboard, admin, payments, classrooms
+from app.api import auth, profiles, config_test, chat, lesson_plans, badges, sessions, dashboard, admin, payments, classrooms, demo_business
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -82,7 +82,17 @@ async def gateway_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    # The white-label demo page is a real HTML document with inline CSS/JS that
+    # fetches the same-origin demo API; the API's default `default-src 'none'`
+    # would break it, so give just that one route a page-appropriate policy.
+    if request.url.path == "/demo/business/page":
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
+            "img-src 'self' data:; base-uri 'none'; form-action 'none'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = "default-src 'none'"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
 
@@ -119,6 +129,7 @@ app.include_router(dashboard.router)
 app.include_router(admin.router)
 app.include_router(payments.router)
 app.include_router(classrooms.router)
+app.include_router(demo_business.router)
 
 
 @app.get("/health")

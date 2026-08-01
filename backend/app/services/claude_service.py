@@ -198,6 +198,50 @@ async def chat_with_character(
     }
 
 
+async def _call_business(system_prompt: str, messages: list) -> anthropic.types.Message:
+    """Raw Claude call for the white-label business assistant demo (no tools)."""
+    client = _get_client()
+    return client.messages.create(
+        model=CHAT_MODEL,
+        max_tokens=600,
+        system=system_prompt,
+        messages=messages,
+    )
+
+
+async def chat_business(
+    system_prompt: str,
+    conversation_history: list,
+    new_message: str,
+) -> dict:
+    """
+    Generic business-assistant turn for the white-label demo.
+    Same engine + circuit breaker as the kid chat, but answers a business's
+    visitors from the system prompt's knowledge base (no education tools).
+    Returns {response, fallback}.
+    """
+    messages = conversation_history[-10:] + [{"role": "user", "content": new_message}]
+
+    response = await anthropic_breaker.call(
+        _call_business,
+        system_prompt,
+        messages,
+        fallback=None,
+    )
+
+    if response is None:
+        return {
+            "response": (
+                "Sorry — I'm reconnecting for a moment. Please try again shortly, "
+                "or leave your details and our team will get right back to you."
+            ),
+            "fallback": True,
+        }
+
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+    return {"response": text, "fallback": False}
+
+
 async def _call_lesson_plan(prompt: str) -> anthropic.types.Message:
     """Raw lesson plan API call — wrapped in circuit breaker by caller."""
     client = _get_client()
