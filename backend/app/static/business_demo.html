@@ -323,6 +323,12 @@ function toggleWidget(open){
       cta_label:'Request a callback',greeting:'Hello! Welcome to CarePlus Pharmacy. How can I help?',
       suggested:['What are your hours?','Do you deliver?']}};
   }
+  // ?biz=<key> lets the SaaS landing page deep-link straight into one vertical.
+  // Ignored unless it names a business we actually have, so a stale or hand-typed
+  // link falls back to the default rather than rendering an empty page.
+  const wanted = new URLSearchParams(location.search).get('biz');
+  if (wanted && CFG[wanted]) biz = wanted;
+
   applyTheme(); resetChat();
 })();
 </script>
