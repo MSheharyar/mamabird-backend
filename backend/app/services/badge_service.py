@@ -9,51 +9,69 @@ logger = logging.getLogger(__name__)
 
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
-# Badge definitions — logic is code, display text is constant (not from client config)
+# Badge definitions — logic is code, display text is constant (not from client config).
+#
+# Names are written for the youngest end of the 2-8 audience: concrete things a
+# child can picture, in the book's own world of nests, feathers and first flights.
+# The previous set ("Perfect Score", "Sky Master", "Subject Expert", "On a Roll!")
+# leaned on abstractions and idioms that a 3-5 year old does not hold yet.
+#
+# Emoji are all long-established ones that render on every platform. Do not swap
+# in anything newer without checking: the nest emoji used elsewhere in this product
+# is Emoji 14 and draws as an empty box on older Android and Windows.
+#
+# `badge_name` may contain {subject}, filled in for subject-specific badges.
 BADGE_RULES = [
     {
         "badge_type": "first_session",
-        "badge_name": "First Flight!",
-        "badge_emoji": "🐣",
+        "badge_name": "First Peep!",
+        "badge_emoji": "🐣",           # hatching chick
         "check": lambda s: s["total_sessions"] >= 1,
         "subject_specific": False,
     },
     {
         "badge_type": "perfect_score",
-        "badge_name": "Perfect Score",
-        "badge_emoji": "⭐",
+        "badge_name": "All Correct!",
+        "badge_emoji": "⭐",               # star
         "check": lambda s: s["latest_score"] == s["latest_total"] and s["latest_total"] > 0,
         "subject_specific": False,
     },
     {
         "badge_type": "five_correct",
-        "badge_name": "Flying High",
-        "badge_emoji": "🦅",
+        "badge_name": "Five Feathers",
+        "badge_emoji": "🐦",           # bird
         "check": lambda s: s["total_correct"] >= 5,
         "subject_specific": False,
     },
     {
         "badge_type": "ten_correct",
-        "badge_name": "Sky Master",
-        "badge_emoji": "🌟",
+        "badge_name": "Ten Feathers",
+        "badge_emoji": "🌈",           # rainbow
         "check": lambda s: s["total_correct"] >= 10,
         "subject_specific": False,
     },
     {
         "badge_type": "subject_master",
-        "badge_name": "Subject Expert",
-        "badge_emoji": "🎓",
+        "badge_name": "{subject} Star",
+        "badge_emoji": "🏅",           # medal
         "check": lambda s: s["subject_correct"] >= 5,
         "subject_specific": True,
     },
     {
         "badge_type": "streak_3",
-        "badge_name": "On a Roll!",
-        "badge_emoji": "🔥",
+        "badge_name": "Three in a Row!",
+        "badge_emoji": "🎉",           # party popper
         "check": lambda s: s["consecutive_correct"] >= 3,
         "subject_specific": False,
     },
 ]
+
+
+def _display_name(rule: dict, subject: str) -> str:
+    """Fill {subject} for subject-specific badges: 'spelling' -> 'Spelling Star'."""
+    if "{subject}" not in rule["badge_name"]:
+        return rule["badge_name"]
+    return rule["badge_name"].format(subject=(subject or "").strip().title())
 
 
 def check_and_award_badges(
@@ -122,11 +140,12 @@ def check_and_award_badges(
             if badge_key in earned_types:
                 continue
             if rule["check"](stats):
+                display_name = _display_name(rule, subject)
                 insert_row = {
                     "child_profile_id": child_profile_id,
                     "client_id": client_id,
                     "badge_type": rule["badge_type"],
-                    "badge_name": rule["badge_name"],
+                    "badge_name": display_name,
                     "badge_emoji": rule["badge_emoji"],
                     "subject": subject if rule["subject_specific"] else None,
                     "earned_at": "now()",
@@ -135,7 +154,7 @@ def check_and_award_badges(
                 if result.data:
                     new_badges.append({
                         "badge_type": rule["badge_type"],
-                        "badge_name": rule["badge_name"],
+                        "badge_name": display_name,
                         "badge_emoji": rule["badge_emoji"],
                         "subject": subject if rule["subject_specific"] else None,
                     })

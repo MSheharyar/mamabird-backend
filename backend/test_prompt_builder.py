@@ -28,13 +28,42 @@ def test_no_mama_bird_in_prompt():
     assert "Captain Jane" in prompt
 
 def test_age_difficulty_bands():
+    # Bands are weighted to the 2-8 audience the product is sold for.
+    assert "Toddler" in _age_to_difficulty(2)
+    assert "Toddler" in _age_to_difficulty(3)
     assert "Pre-K" in _age_to_difficulty(4)
     assert "Pre-K" in _age_to_difficulty(5)
-    assert "Grade 1-2" in _age_to_difficulty(6)
-    assert "Grade 1-2" in _age_to_difficulty(7)
-    assert "Grade 3-4" in _age_to_difficulty(8)
-    assert "Grade 3-4" in _age_to_difficulty(9)
-    assert "Grade 5+" in _age_to_difficulty(10)
+    assert "Early reader" in _age_to_difficulty(6)
+    assert "Early reader" in _age_to_difficulty(7)
+    assert "Confident reader" in _age_to_difficulty(8)
+    assert "Older child" in _age_to_difficulty(10)
+
+
+def test_young_children_are_never_asked_to_spell():
+    """A 2-5 year old cannot type a word back, so the spelling activity must
+    ask for sounds and letters instead. This was the root of the 'too old' tone."""
+    for age in (2, 3, 4, 5):
+        prompt = build_system_prompt(PIRATE_CONFIG, "character_1", "spelling", age)
+        assert "ask them to spell it" not in prompt, f"age {age} asked to spell a whole word"
+        assert "SOUNDS and LETTERS" in prompt
+    for age in (7, 8):
+        prompt = build_system_prompt(PIRATE_CONFIG, "character_1", "spelling", age)
+        assert "ask them to spell it" in prompt, f"age {age} should still spell"
+
+
+def test_reply_length_shrinks_for_younger_children():
+    toddler = build_system_prompt(PIRATE_CONFIG, "character_1", "math", 3)
+    older   = build_system_prompt(PIRATE_CONFIG, "character_1", "math", 8)
+    assert "ONE short sentence" in toddler
+    assert "3-4 sentences" in older
+    assert "3-4 sentences" not in toddler
+
+
+def test_unknown_age_assumes_the_young_end():
+    """Missing age used to default to 7. For a 2-8 product the safe assumption
+    is younger: a too-simple tutor is recoverable, a too-hard one is not."""
+    default_prompt = build_system_prompt(PIRATE_CONFIG, "character_1", "spelling")
+    assert "Pre-K" in default_prompt
 
 def test_knowledge_base_injected():
     config = {**PIRATE_CONFIG, "knowledge_base": {"school_name": "Jolly Roger Elementary"}}
