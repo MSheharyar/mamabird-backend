@@ -120,6 +120,7 @@ async def update_profile(
     return {"profile": result.data[0], "message": "Profile updated"}
 
 
+@router.post("/{profile_id}/delete")  # alias: mobile client posts here
 @router.delete("/{profile_id}")
 async def delete_profile(
     profile_id: str,

@@ -75,13 +75,10 @@ async def chat(
         raise HTTPException(status_code=500, detail="Client configuration not found")
 
     # 3. Check message limit for this child's subscription tier
-    user_row = get_supabase().table("users").select(
-        "subscription_status, subscription_plan"
-    ).eq("id", current_user["user_id"]).execute()
-    user_data = user_row.data[0] if user_row.data else {}
+    # Subscription fields come from get_current_user, which already read this row.
     limit = get_message_limit(
-        user_data.get("subscription_status", "trial"),
-        user_data.get("subscription_plan"),
+        current_user.get("subscription_status") or "trial",
+        current_user.get("subscription_plan"),
     )
     count_result = check_and_increment_message_count(
         req.child_profile_id,
