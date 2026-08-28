@@ -65,7 +65,10 @@ async def chat(
     profile = await verify_child_ownership(req.child_profile_id, current_user)
 
     child_name = profile.get("child_name", "friend")
-    child_age = profile.get("age", 7) or 7
+    # No age on the profile means we do NOT know the child — assume the young end.
+    # Defaulting to 7 (as this did) hands a 3-year-old a Grade 1-2 tutor, which is
+    # exactly the "too old" tone that was reported.
+    child_age = profile.get("age") or 5
     client_id = profile.get("client_id")
 
     if not client_id:
