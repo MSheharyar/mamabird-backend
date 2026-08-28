@@ -21,16 +21,9 @@ def require_role(*allowed_roles: str):
 def require_subscription():
     """FastAPI dependency — raises 402 if user has no active subscription/trial."""
     def _check(current_user: dict = Depends(get_current_user)):
-        result = get_supabase().table("users").select(
-            "subscription_status, trial_ends_at"
-        ).eq("id", current_user["user_id"]).execute()
-
-        if not result.data:
-            raise HTTPException(status_code=401, detail="User not found")
-
-        user = result.data[0]
-        status = user.get("subscription_status", "")
-        trial_ends_at = user.get("trial_ends_at")
+        # get_current_user already read this row; reusing it saves a round trip.
+        status = current_user.get("subscription_status") or ""
+        trial_ends_at = current_user.get("trial_ends_at")
 
         if status in ("active",):
             return current_user

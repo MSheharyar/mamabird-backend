@@ -81,8 +81,11 @@ def get_current_user(
     claimed_ver = payload.get("ver", 0)
 
     # Revocation check: token_version must match the DB record
+    # One read of the user row, not three. require_subscription and the chat
+    # endpoint both re-queried this same row for subscription fields, costing
+    # two extra Supabase round trips on every authenticated request.
     result = get_supabase().table("users").select(
-        "role, client_id, token_version"
+        "role, client_id, token_version, subscription_status, trial_ends_at, subscription_plan"
     ).eq("id", user_id).execute()
 
     if not result.data:
@@ -96,6 +99,10 @@ def get_current_user(
         "user_id": user_id,
         "role": user.get("role", payload.get("role")),
         "client_id": user.get("client_id") or payload.get("client_id"),
+        # Carried so downstream dependencies do not re-fetch the same row.
+        "subscription_status": user.get("subscription_status"),
+        "trial_ends_at": user.get("trial_ends_at"),
+        "subscription_plan": user.get("subscription_plan"),
     }
 
 
