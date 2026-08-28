@@ -4,10 +4,13 @@ from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
+import logging
 import os
 
 from app.limiter import limiter
 from app.db.client import get_supabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -226,3 +229,54 @@ async def get_me(current_user: dict = Depends(get_current_user)):
         "subscription_status": user["subscription_status"],
         "trial_ends_at": user["trial_ends_at"],
     }
+
+
+@router.post("/delete-account")
+async def delete_account(current_user: dict = Depends(get_current_user)):
+    """
+    Permanently delete the signed-in account and all associated data.
+
+    Required by the Apple App Store (in-app account deletion) and Google Play,
+    and by our COPPA commitment that a parent can erase their child's data on
+    request. This wipes the user, every child profile they own, and all rows
+    that reference those children.
+    """
+    sb = get_supabase()
+    user_id = current_user["user_id"]
+
+    row = sb.table("users").select("email").eq("id", user_id).execute()
+    if not row.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    email = row.data[0].get("email")
+
+    # Child profiles owned by this user, and every table that references them.
+    child_rows = sb.table("child_profiles").select("id").eq("user_id", user_id).execute()
+    child_ids = [c["id"] for c in (child_rows.data or [])]
+
+    child_tables = ("progress", "badges", "chat_sessions",
+                    "message_counts", "usage_logs", "lesson_plans")
+    for cid in child_ids:
+        for tbl in child_tables:
+            try:
+                sb.table(tbl).delete().eq("child_profile_id", cid).execute()
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+                logger.warning("delete_account: cleanup of %s failed: %s", tbl, exc)
+
+    # User-scoped rows.
+    for tbl in ("child_profiles", "classrooms", "lesson_plans"):
+        try:
+            sb.table(tbl).delete().eq("user_id", user_id).execute()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("delete_account: cleanup of %s (user) failed: %s", tbl, exc)
+
+    if email:
+        try:
+            sb.table("login_attempts").delete().eq("email", email).execute()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("delete_account: login_attempts cleanup failed: %s", exc)
+
+    # NOTE: if the user has a live Stripe subscription, cancel it in Stripe
+    # before/after this call (stripe_customer_id lives on the user row).
+    sb.table("users").delete().eq("id", user_id).execute()
+
+    return {"message": "Account deleted"}
