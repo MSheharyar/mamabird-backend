@@ -38,10 +38,16 @@ if _sentry_dsn:
 _docs_url = "/docs" if os.getenv("ENABLE_DOCS", "false").lower() == "true" else None
 _redoc_url = "/redoc" if os.getenv("ENABLE_DOCS", "false").lower() == "true" else None
 
+# Disabling the docs UI is not enough on its own: FastAPI keeps serving the
+# raw schema at /openapi.json, which was returning 200 in production and
+# describing all 46 endpoints and 19 models to anyone who asked.
+_openapi_url = "/openapi.json" if _docs_url else None
+
 app = FastAPI(
     title="MamaBird Chatbot API",
     docs_url=_docs_url,
     redoc_url=_redoc_url,
+    openapi_url=_openapi_url,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -52,7 +58,12 @@ allowed_origins = [o.strip() for o in allowed_origins_raw.split(",") if o.strip(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"http://localhost:\d+",  # Flutter web / local dev on any port
+    # Any localhost port was allowed *in production*, with credentials — so a
+    # page running locally on a user's machine could make authenticated calls.
+    # Dev convenience only; set ALLOW_LOCALHOST_ORIGINS=true locally.
+    allow_origin_regex=(r"http://localhost:\d+"
+                        if os.getenv("ALLOW_LOCALHOST_ORIGINS", "false").lower() == "true"
+                        else None),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -143,9 +143,15 @@ async def signup(request: Request, req: SignupRequest):
         raise HTTPException(status_code=400, detail="Role must be 'parent' or 'teacher'")
 
     sb = get_supabase()
+    # Login already answers "Invalid email or password" for both cases, but
+    # signup answered "Email already registered", which turns this endpoint
+    # into an oracle for whether any given address has an account.
     existing = sb.table("users").select("id").eq("email", req.email).execute()
     if existing.data:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(
+            status_code=400,
+            detail="We could not create that account. If you already have one, try signing in.",
+        )
 
     domain = request.headers.get(
         "X-Client-Domain",
