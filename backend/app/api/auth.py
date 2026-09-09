@@ -1,14 +1,17 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
 import os
+import secrets
 
 from app.limiter import limiter
 from app.db.client import get_supabase
+from app.services import mailer
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,14 @@ ACCESS_TTL = timedelta(hours=24)
 _MAX_ATTEMPTS = 5
 _LOCKOUT_SECONDS = 300
 
+# Password rules. Signup accepted anything at all — including a single
+# character — while the sign-up form promised "at least 8 characters".
+MIN_PASSWORD_LEN = 8
+
+RESET_TTL_MINUTES = 60
+_RESET_MAX_PER_HOUR = 3          # per account, on top of the per-IP limiter
+SITE_URL = os.getenv("SITE_URL", "https://threebabybirdies.com")
+
 
 # ─── Request Models ───────────────────────────────────────────────
 class SignupRequest(BaseModel):
@@ -33,6 +44,15 @@ class SignupRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
+    password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=128)
     password: str
 
 
@@ -141,6 +161,12 @@ def _clear_attempts(email: str) -> None:
 async def signup(request: Request, req: SignupRequest):
     if req.role not in ["parent", "teacher"]:
         raise HTTPException(status_code=400, detail="Role must be 'parent' or 'teacher'")
+
+    if len(req.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LEN} characters",
+        )
 
     sb = get_supabase()
     # Login already answers "Invalid email or password" for both cases, but
@@ -293,3 +319,121 @@ async def delete_account(current_user: dict = Depends(get_current_user)):
     sb.table("users").delete().eq("id", user_id).execute()
 
     return {"message": "Account deleted"}
+
+
+# ─── Password reset ───────────────────────────────────────────────
+def _hash_token(token: str) -> str:
+    """Only the hash is ever stored, so a dump of the table is not usable."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+@router.post("/forgot-password")
+@limiter.limit("5/hour")
+async def forgot_password(request: Request, req: ForgotPasswordRequest):
+    """
+    Always answers the same thing. Whether the address exists, whether SMTP
+    is configured, and whether the send succeeded are all invisible to the
+    caller — otherwise this endpoint tells an attacker which addresses have
+    accounts, which is exactly what login and signup are careful not to do.
+    """
+    same_answer = {
+        "message": "If that address has an account, a reset link is on its way."
+    }
+    email = req.email.strip().lower()
+    sb = get_supabase()
+
+    try:
+        found = sb.table("users").select("id").eq("email", email).execute()
+        if not found.data:
+            return same_answer
+        user_id = found.data[0]["id"]
+
+        # Per-account throttle, so knowing an address is not enough to bury
+        # someone in mail. The IP limiter above handles the spray case.
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        recent = sb.table("password_resets").select("id").eq(
+            "user_id", user_id
+        ).gte("created_at", since).execute()
+        if recent.data and len(recent.data) >= _RESET_MAX_PER_HOUR:
+            logger.warning("Password reset throttled for user %s", user_id)
+            return same_answer
+
+        token = secrets.token_urlsafe(32)
+        expires = datetime.now(timezone.utc) + timedelta(minutes=RESET_TTL_MINUTES)
+        sb.table("password_resets").insert({
+            "user_id": user_id,
+            "token_hash": _hash_token(token),
+            "expires_at": expires.isoformat(),
+            "requested_ip": (request.client.host if request.client else None),
+        }).execute()
+
+        url = f"{SITE_URL}/reset-password.html?token={token}"
+        subject, text, html = mailer.password_reset_email(url, RESET_TTL_MINUTES)
+        mailer.send(email, subject, text, html)
+    except Exception:
+        logger.exception("forgot_password failed")
+
+    return same_answer
+
+
+@router.post("/reset-password")
+@limiter.limit("10/hour")
+async def reset_password(request: Request, req: ResetPasswordRequest):
+    if len(req.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LEN} characters",
+        )
+
+    sb = get_supabase()
+    rows = sb.table("password_resets").select("*").eq(
+        "token_hash", _hash_token(req.token)
+    ).execute()
+
+    invalid = HTTPException(
+        status_code=400,
+        detail="That reset link is invalid or has expired. Please request a new one.",
+    )
+    if not rows.data:
+        raise invalid
+
+    row = rows.data[0]
+    if row.get("used_at"):
+        raise invalid
+    try:
+        expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+    except (ValueError, TypeError, KeyError):
+        raise invalid
+    if datetime.now(timezone.utc) > expires:
+        raise invalid
+
+    user_id = row["user_id"]
+    sb.table("users").update(
+        {"password_hash": pwd_context.hash(req.password)}
+    ).eq("id", user_id).execute()
+
+    # Single use, and any other outstanding link for this account dies too.
+    now = datetime.now(timezone.utc).isoformat()
+    sb.table("password_resets").update({"used_at": now}).eq("id", row["id"]).execute()
+    sb.table("password_resets").update({"used_at": now}).eq(
+        "user_id", user_id
+    ).is_("used_at", "null").execute()
+
+    # Whoever changed the password keeps their new session; every other live
+    # token for this account stops working. If the reset was a recovery from
+    # a compromise, the attacker is logged out by this line.
+    revoke_all(user_id)
+
+    # A successful reset should not leave the account still locked out from
+    # the failed attempts that led here.
+    try:
+        user = sb.table("users").select("email").eq("id", user_id).execute()
+        if user.data:
+            sb.table("login_attempts").delete().eq(
+                "email", user.data[0]["email"]
+            ).execute()
+    except Exception:
+        logger.warning("reset_password: could not clear login_attempts", exc_info=True)
+
+    logger.info("Password reset completed for user %s", user_id)
+    return {"message": "Your password has been changed. You can sign in with it now."}
