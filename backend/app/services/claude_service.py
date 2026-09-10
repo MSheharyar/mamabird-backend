@@ -65,12 +65,34 @@ def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens / 1_000_000 * cost_in) + (output_tokens / 1_000_000 * cost_out)
 
 
-async def _call_claude(system_prompt: str, messages: list) -> anthropic.types.Message:
+def _reply_ceiling(child_age: int | None) -> int:
+    """A hard cap on reply length, scaled to the age.
+
+    The prompt already states a sentence limit per age, but a prompt is a
+    request and this is a limit. Every value leaves several times the room a
+    compliant answer needs, so a well-behaved reply is never truncated; it
+    only stops the runaway four-paragraph version a five-year-old was getting.
+    """
+    if child_age is None:
+        return 400
+    if child_age <= 3:
+        return 150
+    if child_age <= 5:
+        return 200
+    if child_age <= 7:
+        return 300
+    if child_age <= 8:
+        return 400
+    return 500
+
+
+async def _call_claude(system_prompt: str, messages: list,
+                       child_age: int | None = None) -> anthropic.types.Message:
     """Raw Claude API call — wrapped in circuit breaker by callers."""
     client = _get_client()
     return client.messages.create(
         model=CHAT_MODEL,
-        max_tokens=1000,
+        max_tokens=_reply_ceiling(child_age),
         system=system_prompt,
         messages=messages,
         tools=[_TOOL_DEF],
@@ -78,12 +100,12 @@ async def _call_claude(system_prompt: str, messages: list) -> anthropic.types.Me
 
 
 async def _call_claude_followup(
-    system_prompt: str, messages: list
+    system_prompt: str, messages: list, child_age: int | None = None
 ) -> anthropic.types.Message:
     client = _get_client()
     return client.messages.create(
         model=CHAT_MODEL,
-        max_tokens=1000,
+        max_tokens=_reply_ceiling(child_age),
         system=system_prompt,
         messages=messages,
         tools=[_TOOL_DEF],
@@ -116,6 +138,7 @@ async def chat_with_character(
         _call_claude,
         system_prompt,
         messages,
+        child_age,
         fallback=None,
     )
 
