@@ -42,10 +42,26 @@ _ELEVEN_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
 # Named voices, so the frontend never sends a raw provider id and cannot
 # be used to drive somebody else's voice off our account.
-_VOICES = {
-    "chirpy": os.getenv("ELEVENLABS_VOICE_CHIRPY", ""),
-    "mama": os.getenv("ELEVENLABS_VOICE_MAMA", ""),
+#
+# The ids are not secrets: they name a voice on our ElevenLabs account and
+# are useless without the key. They live here as defaults so a deployment
+# only has to supply the key. Either can still be overridden by its
+# environment variable if the casting changes.
+#
+#   chirpy -> "EMMA"  (the character the children talk to)
+#   mama   -> "Jessa" (Mama Bird, for parents and teachers)
+_VOICE_DEFAULTS = {
+    "chirpy": "pPdl9cQBQq4p6mRkZy2Z",
+    "mama":   "yj30vwTGJxSHezdAGsv9",
 }
+
+
+def _voice_id(name: str) -> str:
+    """Resolved per request, so setting the env var does not need a rebuild."""
+    if name not in _VOICE_DEFAULTS:
+        return ""
+    env = "ELEVENLABS_VOICE_%s" % name.upper()
+    return os.getenv(env, "").strip() or _VOICE_DEFAULTS[name]
 
 # Anything that is not prose is either markup that leaked out of a bubble
 # or an attempt to make us synthesise something odd. Strip, do not reject,
@@ -75,7 +91,7 @@ async def speak(request: Request, req: SpeakRequest) -> Response:
             detail="Speech is not configured; the client should use the browser voice",
         )
 
-    voice_id = _VOICES.get(req.voice, "").strip()
+    voice_id = _voice_id(req.voice)
     if not voice_id:
         raise HTTPException(status_code=400, detail="Unknown voice")
 
