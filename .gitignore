@@ -17,3 +17,6 @@ build/
 # Marketing site — lives in its own repo (github.com/MSheharyar/mamabird-website), deployed via Netlify.
 # This is just a local working copy; do not commit it into the product repo.
 threebabybirdies_prototype/
+
+# Deploy settings for this PC (server address, key path). Never commit.
+.env.deploy
