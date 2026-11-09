@@ -367,7 +367,7 @@ async def forgot_password(request: Request, req: ForgotPasswordRequest):
             "requested_ip": (request.client.host if request.client else None),
         }).execute()
 
-        url = f"{SITE_URL}/reset-password.html?token={token}"
+        url = f"{SITE_URL}/reset-password?token={token}"
         subject, text, html = mailer.password_reset_email(url, RESET_TTL_MINUTES)
         mailer.send(email, subject, text, html)
     except Exception:
